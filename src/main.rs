@@ -1,63 +1,66 @@
+use is_executable::IsExecutable;
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::path::PathBuf;
 use std::{
     fmt::Display,
     io::{self, BufRead, Write},
 };
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-enum ShellError {
-    #[error("{0}: command not found")]
-    CommandNotFound(String),
+#[derive(Debug)]
+enum Command {
+    BuiltIn(BuiltInCommand),
+    Executable(ExecutableCommand),
+    Unrecognized(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandType {
-    BuiltIn,
-    Executable,
-    Unrecognized,
-}
-
-impl Display for CommandType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let typ = match self {
-            CommandType::BuiltIn => "shell builtin",
-            CommandType::Executable => "executable",
-            CommandType::Unrecognized => "unrecognized",
-        };
-        write!(f, "{}", typ)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandName {
-    Exit,
-    Echo,
-    Type,
-}
-
-impl Display for CommandName {
+impl Display for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
-            CommandName::Exit => "exit",
-            CommandName::Echo => "echo",
-            CommandName::Type => "type",
+            Command::BuiltIn(command) => command.name.as_ref(),
+            Command::Executable(command) => command.name(),
+            Command::Unrecognized(name) => name,
         };
         write!(f, "{}", name)
     }
 }
 
 #[derive(Debug)]
-struct Command {
+struct BuiltInCommand {
     name: CommandName,
-    typ: CommandType,
 }
 
-fn parse_command(command: &str) -> Result<Command, ShellError> {
+#[derive(strum::EnumString, strum::AsRefStr, Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandName {
+    #[strum(serialize = "exit")]
+    Exit,
+    #[strum(serialize = "echo")]
+    Echo,
+    #[strum(serialize = "type")]
+    Type,
+}
+
+#[derive(Debug)]
+struct ExecutableCommand {
+    file_path: PathBuf,
+}
+
+impl ExecutableCommand {
+    pub(crate) fn name(&self) -> &str {
+        self.file_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_str()
+            .expect("executable file path is valid unicode")
+    }
+}
+
+fn parse_command(command: &str) -> Command {
     macro_rules! builtin {
         ($name:ident) => {
-            Ok(Command {
+            Command::BuiltIn(BuiltInCommand {
                 name: CommandName::$name,
-                typ: CommandType::BuiltIn,
             })
         };
     }
@@ -66,7 +69,38 @@ fn parse_command(command: &str) -> Result<Command, ShellError> {
         "exit" => builtin!(Exit),
         "echo" => builtin!(Echo),
         "type" => builtin!(Type),
-        _ => Err(ShellError::CommandNotFound(String::from(command))),
+        command => {
+            let path: OsString = env::var_os("PATH").expect("machine has env PATH set");
+            let dirs = env::split_paths(&path);
+            let files = dirs.flat_map(|d| {
+                if d.is_dir() {
+                    fs::read_dir(d)
+                        .expect("PATH dirs exist and have read permissions")
+                        .map(|entry| {
+                            entry
+                                .expect("PATH files exist and have read permissions")
+                                .path()
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![d]
+                }
+            });
+
+            for file in files {
+                let stem = file.file_stem();
+                if stem.is_none() {
+                    continue;
+                }
+                let name = stem.unwrap().to_str().expect("PATH name is valid unicode");
+
+                if name == command && file.is_executable() {
+                    return Command::Executable(ExecutableCommand { file_path: file });
+                }
+            }
+
+            Command::Unrecognized(command.to_string())
+        }
     }
 }
 
@@ -92,27 +126,24 @@ fn main() -> anyhow::Result<()> {
             (buffer, vec![])
         };
 
-        let command = parse_command(command)?;
+        let command = parse_command(command);
         match command {
-            Command {
-                name: CommandName::Exit,
-                ..
-            } => break,
-            Command {
-                name: CommandName::Echo,
-                ..
-            } => write!(stdout, "{}", args.join(" "))?,
-            Command {
-                name: CommandName::Type,
-                ..
-            } => {
-                assert!(!args.is_empty(), "type must have at least one arg");
-                match parse_command(args[0]) {
-                    Ok(command) => write!(stdout, "{} is a {}", command.name, command.typ)?,
-                    Err(e) => write!(stdout, "{}", e)?,
+            Command::BuiltIn(BuiltInCommand { name }) => match name {
+                CommandName::Exit => break,
+                CommandName::Echo => write!(stdout, "{}", args.join(" "))?,
+                CommandName::Type => {
+                    assert!(!args.is_empty(), "type must have at least one arg");
+                    let command = parse_command(args[0]);
+                    match command {
+                        Command::BuiltIn(_) => write!(stdout, "{} is a shell builtin", command)?,
+                        Command::Executable(_) => write!(stdout, "{} is an executable", command)?,
+                        Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
+                    }
                 }
-            }
-        }
+            },
+            Command::Executable(_) => todo!("Execute the command"),
+            Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
+        };
         writeln!(stdout)?;
         stdout.flush()?;
     }
