@@ -1,5 +1,8 @@
-#[allow(unused_imports)]
 use std::io::{self, BufRead, Write};
+
+enum Command {
+    Exit,
+}
 
 fn main() {
     let stdin = io::stdin();
@@ -7,7 +10,8 @@ fn main() {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    loop {
+    let mut exit = false;
+    while !exit {
         print!("$ ");
         stdout.flush().unwrap();
 
@@ -15,7 +19,18 @@ fn main() {
         stdin.read_line(&mut buffer).unwrap();
         let buffer = buffer.trim();
 
-        println!("{buffer}: command not found");
-        stdout.flush().unwrap();
+        let command = match buffer {
+            "exit" => Command::Exit,
+            _ => {
+                println!("{buffer}: command not found");
+                stdout.flush().unwrap();
+
+                continue;
+            }
+        };
+
+        match command {
+            Command::Exit => exit = true,
+        }
     }
 }
