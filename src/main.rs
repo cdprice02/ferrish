@@ -2,6 +2,7 @@ use std::io::{self, BufRead, Write};
 
 enum Command {
     Exit,
+    Echo,
 }
 
 fn main() {
@@ -19,8 +20,17 @@ fn main() {
         stdin.read_line(&mut buffer).unwrap();
         let buffer = buffer.trim();
 
-        let command = match buffer {
+        let (command, args) = if buffer.contains(' ') {
+            let (command, args) = buffer.split_once(' ').expect("buffer contains ` `");
+            let args = args.split(' ').collect::<Vec<_>>();
+            (command, args)
+        } else {
+            (buffer, vec![])
+        };
+
+        let command = match command {
             "exit" => Command::Exit,
+            "echo" => Command::Echo,
             _ => {
                 println!("{buffer}: command not found");
                 stdout.flush().unwrap();
@@ -31,6 +41,7 @@ fn main() {
 
         match command {
             Command::Exit => exit = true,
+            Command::Echo => println!("{}", args.join(" ")),
         }
     }
 }
