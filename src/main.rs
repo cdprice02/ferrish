@@ -15,20 +15,15 @@ enum Command {
     Unrecognized(String),
 }
 
-impl Display for Command {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Command::BuiltIn(command) => command.name.as_ref(),
-            Command::Executable(command) => command.name(),
-            Command::Unrecognized(name) => name,
-        };
-        write!(f, "{}", name)
-    }
-}
-
 #[derive(Debug)]
 struct BuiltInCommand {
     name: CommandName,
+}
+
+impl Display for BuiltInCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name.as_ref())
+    }
 }
 
 #[derive(strum::EnumString, strum::AsRefStr, Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +39,12 @@ enum CommandName {
 #[derive(Debug)]
 struct ExecutableCommand {
     file_path: PathBuf,
+}
+
+impl Display for ExecutableCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
 }
 
 impl ExecutableCommand {
@@ -126,17 +127,22 @@ fn main() -> anyhow::Result<()> {
             (buffer, vec![])
         };
 
-        let command = parse_command(command);
-        match command {
+        match parse_command(command) {
             Command::BuiltIn(BuiltInCommand { name }) => match name {
                 CommandName::Exit => break,
                 CommandName::Echo => write!(stdout, "{}", args.join(" "))?,
                 CommandName::Type => {
                     assert!(!args.is_empty(), "type must have at least one arg");
-                    let command = parse_command(args[0]);
-                    match command {
-                        Command::BuiltIn(_) => write!(stdout, "{} is a shell builtin", command)?,
-                        Command::Executable(_) => write!(stdout, "{} is an executable", command)?,
+                    match parse_command(args[0]) {
+                        Command::BuiltIn(builtin) => {
+                            write!(stdout, "{} is a shell builtin", builtin)?
+                        }
+                        Command::Executable(executable) => write!(
+                            stdout,
+                            "{} is {}",
+                            executable,
+                            executable.file_path.display()
+                        )?,
                         Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
                     }
                 }
