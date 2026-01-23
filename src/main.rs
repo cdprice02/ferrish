@@ -1,8 +1,19 @@
 #[allow(unused_imports)]
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 
 fn main() {
-    // TODO: Uncomment the code below to pass the first stage
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
     print!("$ ");
-    io::stdout().flush().unwrap();
+    stdout.flush().unwrap();
+
+    let mut buffer = String::new();
+    stdin.read_line(&mut buffer).expect("read_line works");
+    let buffer = buffer.trim();
+
+    print!("{buffer}: command not found");
+    stdout.flush().unwrap();
 }
