@@ -7,13 +7,15 @@ fn main() {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    print!("$ ");
-    stdout.flush().unwrap();
+    loop {
+        print!("$ ");
+        stdout.flush().unwrap();
 
-    let mut buffer = String::new();
-    stdin.read_line(&mut buffer).expect("read_line works");
-    let buffer = buffer.trim();
+        let mut buffer = String::new();
+        stdin.read_line(&mut buffer).unwrap();
+        let buffer = buffer.trim();
 
-    print!("{buffer}: command not found");
-    stdout.flush().unwrap();
+        println!("{buffer}: command not found");
+        stdout.flush().unwrap();
+    }
 }
