@@ -92,26 +92,28 @@ fn main() -> anyhow::Result<()> {
             (buffer, vec![])
         };
 
-        let command = parse_command(command)?;
-        match command {
-            Command {
-                name: CommandName::Exit,
-                ..
-            } => break,
-            Command {
-                name: CommandName::Echo,
-                ..
-            } => write!(stdout, "{}", args.join(" "))?,
-            Command {
-                name: CommandName::Type,
-                ..
-            } => {
-                assert!(!args.is_empty(), "type must have at least one arg");
-                match parse_command(args[0]) {
-                    Ok(command) => write!(stdout, "{} is a {}", command.name, command.typ)?,
-                    Err(e) => write!(stdout, "{}", e)?,
+        match parse_command(command) {
+            Ok(command) => match command {
+                Command {
+                    name: CommandName::Exit,
+                    ..
+                } => break,
+                Command {
+                    name: CommandName::Echo,
+                    ..
+                } => write!(stdout, "{}", args.join(" "))?,
+                Command {
+                    name: CommandName::Type,
+                    ..
+                } => {
+                    assert!(!args.is_empty(), "type must have at least one arg");
+                    match parse_command(args[0]) {
+                        Ok(command) => write!(stdout, "{} is a {}", command.name, command.typ)?,
+                        Err(e) => write!(stdout, "{}", e)?,
+                    }
                 }
-            }
+            },
+            Err(e) => write!(stdout, "{}", e)?,
         }
         writeln!(stdout)?;
         stdout.flush()?;
