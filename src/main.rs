@@ -6,7 +6,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 enum ShellError {
-    #[error("{0}: command not found")]
+    #[error("{0}: not found")]
     CommandNotFound(String),
 }
 
