@@ -130,20 +130,20 @@ fn main() -> anyhow::Result<()> {
         match parse_command(command) {
             Command::BuiltIn(BuiltInCommand { name }) => match name {
                 CommandName::Exit => break,
-                CommandName::Echo => write!(stdout, "{}", args.join(" "))?,
+                CommandName::Echo => writeln!(stdout, "{}", args.join(" "))?,
                 CommandName::Type => {
                     assert!(!args.is_empty(), "type must have at least one arg");
                     match parse_command(args[0]) {
                         Command::BuiltIn(builtin) => {
-                            write!(stdout, "{} is a shell builtin", builtin)?
+                            writeln!(stdout, "{} is a shell builtin", builtin)?
                         }
-                        Command::Executable(executable) => write!(
+                        Command::Executable(executable) => writeln!(
                             stdout,
                             "{} is {}",
                             executable,
                             executable.file_path.display()
                         )?,
-                        Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
+                        Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
                     }
                 }
             },
@@ -153,9 +153,8 @@ fn main() -> anyhow::Result<()> {
                     .output()?;
                 stdout.write_all(&output.stdout)?;
             }
-            Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
+            Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
         };
-        writeln!(stdout)?;
         stdout.flush()?;
     }
 
