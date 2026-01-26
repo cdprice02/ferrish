@@ -148,7 +148,7 @@ fn main() -> anyhow::Result<()> {
                 }
             },
             Command::Executable(executable) => {
-                let output = std::process::Command::new(executable.file_path)
+                let output = std::process::Command::new(executable.name())
                     .args(args)
                     .output()?;
                 stdout.write_all(&output.stdout)?;
