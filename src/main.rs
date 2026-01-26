@@ -89,14 +89,14 @@ fn parse_command(command: &str) -> Command {
             });
 
             for file in files {
-                let stem = file.file_stem();
-                if stem.is_none() {
+                if !file.is_executable() {
                     continue;
                 }
-                let name = stem.unwrap().to_str().expect("PATH name is valid unicode");
 
-                if name == command && file.is_executable() {
-                    return Command::Executable(ExecutableCommand { file_path: file });
+                let executable_command = ExecutableCommand { file_path: file };
+
+                if executable_command.name() == command {
+                    return Command::Executable(executable_command);
                 }
             }
 
@@ -147,7 +147,12 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             },
-            Command::Executable(_) => todo!("Execute the command"),
+            Command::Executable(executable) => {
+                let output = std::process::Command::new(executable.file_path)
+                    .args(args)
+                    .output()?;
+                stdout.write_all(&output.stdout)?;
+            }
             Command::Unrecognized(name) => write!(stdout, "{}: not found", name)?,
         };
         writeln!(stdout)?;
