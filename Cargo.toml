@@ -1,9 +1,11 @@
 [package]
-name = "codecrafters-shell"
+name = "ferrish"
 version = "0.1.0"
-authors = ["Codecrafters <hello@codecrafters.io>"]
 edition = "2024"
-rust-version = "1.91"
+authors = ["Carson Price <cdprice02@users.noreply.github.com>"]
+description = "Ferrish is a modern, Rust-powered shell focused on safety, performance, and a clean interactive experience."
+repository = "https://github.com/cdprice02/ferrish"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.68"                                # error handling
