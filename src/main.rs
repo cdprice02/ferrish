@@ -2,6 +2,7 @@ use is_executable::IsExecutable;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::{
     fmt::Display,
     io::{self, BufRead, Write},
@@ -16,7 +17,7 @@ enum Command {
 
 #[derive(Debug)]
 struct BuiltInCommand {
-    name: CommandName,
+    name: BuiltInName,
 }
 
 impl Display for BuiltInCommand {
@@ -26,13 +27,15 @@ impl Display for BuiltInCommand {
 }
 
 #[derive(strum::EnumString, strum::AsRefStr, Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandName {
+enum BuiltInName {
     #[strum(serialize = "exit")]
     Exit,
     #[strum(serialize = "echo")]
     Echo,
     #[strum(serialize = "type")]
     Type,
+    #[strum(serialize = "pwd")]
+    Pwd,
 }
 
 #[derive(Debug)]
@@ -58,48 +61,47 @@ impl ExecutableCommand {
 fn parse_command(command: &str) -> Command {
     macro_rules! builtin {
         ($name:ident) => {
-            Command::BuiltIn(BuiltInCommand {
-                name: CommandName::$name,
-            })
+            Command::BuiltIn(BuiltInCommand { name: $name })
         };
     }
 
-    match command {
-        "exit" => builtin!(Exit),
-        "echo" => builtin!(Echo),
-        "type" => builtin!(Type),
-        command => {
-            let path = env::var_os("PATH").unwrap_or_default();
-            let dirs = env::split_paths(&path);
-            let files = dirs.flat_map(|d| {
-                if d.is_dir() {
-                    match fs::read_dir(d) {
-                        Ok(entries) => entries
-                            .filter_map(|entry_res| entry_res.ok().map(|entry| entry.path()))
-                            .collect::<Vec<_>>(),
-                        Err(_) => Vec::new(),
-                    }
-                } else {
-                    // Not a directory, skip it
-                    Vec::new()
-                }
-            });
-
-            for file in files {
-                if !file.is_executable() {
-                    continue;
-                }
-
-                let executable_command = ExecutableCommand { file_path: file };
-
-                if executable_command.name() == command {
-                    return Command::Executable(executable_command);
-                }
+    let name = BuiltInName::from_str(command);
+    if let Ok(name) = name {
+        builtin!(name)
+    } else {
+        for file in get_path_files() {
+            if !file.is_executable() {
+                continue;
             }
 
-            Command::Unrecognized(command.to_string())
+            let executable_command = ExecutableCommand { file_path: file };
+
+            if executable_command.name() == command {
+                return Command::Executable(executable_command);
+            }
         }
+
+        Command::Unrecognized(command.to_string())
     }
+}
+
+fn get_path_files() -> Vec<PathBuf> {
+    let path = env::var_os("PATH").unwrap_or_default();
+    let dirs = env::split_paths(&path);
+    dirs.flat_map(|d| {
+        if d.is_dir() {
+            match fs::read_dir(d) {
+                Ok(entries) => entries
+                    .filter_map(|entry_res| entry_res.ok().map(|entry| entry.path()))
+                    .collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            // Not a directory, skip it
+            Vec::new()
+        }
+    })
+    .collect()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -107,6 +109,8 @@ fn main() -> anyhow::Result<()> {
     let mut stdin = stdin.lock();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
+
+    let mut working_dir = env::current_dir()?;
 
     loop {
         write!(stdout, "$ ")?;
@@ -127,9 +131,9 @@ fn main() -> anyhow::Result<()> {
 
         match parse_command(command) {
             Command::BuiltIn(BuiltInCommand { name }) => match name {
-                CommandName::Exit => break,
-                CommandName::Echo => writeln!(stdout, "{}", args.join(" "))?,
-                CommandName::Type => {
+                BuiltInName::Exit => break,
+                BuiltInName::Echo => writeln!(stdout, "{}", args.join(" "))?,
+                BuiltInName::Type => {
                     if args.is_empty() {
                         writeln!(stdout, "type: missing operand")?;
                     } else {
@@ -147,9 +151,10 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
             },
             Command::Executable(executable) => {
-                let output = std::process::Command::new(executable.file_path)
+                let output = std::process::Command::new(executable.name())
                     .args(args)
                     .output()?;
                 stdout.write_all(&output.stdout)?;
