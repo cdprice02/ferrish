@@ -1,7 +1,5 @@
-use bytes::buf;
 use is_executable::IsExecutable;
 use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::{
@@ -49,7 +47,7 @@ impl Display for ExecutableCommand {
 }
 
 impl ExecutableCommand {
-    pub(crate) fn name(&self) -> &str {
+    fn name(&self) -> &str {
         self.file_path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -82,7 +80,8 @@ fn parse_command(command: &str) -> Command {
                         Err(_) => Vec::new(),
                     }
                 } else {
-                    vec![d]
+                    // Not a directory, skip it
+                    Vec::new()
                 }
             });
 
@@ -150,7 +149,7 @@ fn main() -> anyhow::Result<()> {
                 }
             },
             Command::Executable(executable) => {
-                let output = std::process::Command::new(executable.name())
+                let output = std::process::Command::new(executable.file_path)
                     .args(args)
                     .output()?;
                 stdout.write_all(&output.stdout)?;
