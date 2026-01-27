@@ -1,3 +1,4 @@
+use bytes::buf;
 use is_executable::IsExecutable;
 use std::env;
 use std::ffi::OsString;
@@ -51,9 +52,8 @@ impl ExecutableCommand {
     pub(crate) fn name(&self) -> &str {
         self.file_path
             .file_stem()
-            .unwrap_or_default()
-            .to_str()
-            .expect("executable file path is valid unicode")
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
     }
 }
 
@@ -71,18 +71,16 @@ fn parse_command(command: &str) -> Command {
         "echo" => builtin!(Echo),
         "type" => builtin!(Type),
         command => {
-            let path: OsString = env::var_os("PATH").expect("machine has env PATH set");
+            let path = env::var_os("PATH").unwrap_or_default();
             let dirs = env::split_paths(&path);
             let files = dirs.flat_map(|d| {
                 if d.is_dir() {
-                    fs::read_dir(d)
-                        .expect("PATH dirs exist and have read permissions")
-                        .map(|entry| {
-                            entry
-                                .expect("PATH files exist and have read permissions")
-                                .path()
-                        })
-                        .collect::<Vec<_>>()
+                    match fs::read_dir(d) {
+                        Ok(entries) => entries
+                            .filter_map(|entry_res| entry_res.ok().map(|entry| entry.path()))
+                            .collect::<Vec<_>>(),
+                        Err(_) => Vec::new(),
+                    }
                 } else {
                     vec![d]
                 }
@@ -119,12 +117,13 @@ fn main() -> anyhow::Result<()> {
         stdin.read_line(&mut buffer)?;
         let buffer = buffer.trim();
 
-        let (command, args) = if buffer.contains(' ') {
-            let (command, args) = buffer.split_once(' ').expect("buffer contains ` `");
-            let args = args.split(' ').collect::<Vec<_>>();
-            (command, args)
+        let (command, args) = if buffer.is_empty() {
+            (buffer, Vec::new())
         } else {
-            (buffer, vec![])
+            let mut parts = buffer.split_whitespace();
+            let command = parts.next().expect("buffer is not empty");
+            let args = parts.collect::<Vec<_>>();
+            (command, args)
         };
 
         match parse_command(command) {
@@ -132,18 +131,21 @@ fn main() -> anyhow::Result<()> {
                 CommandName::Exit => break,
                 CommandName::Echo => writeln!(stdout, "{}", args.join(" "))?,
                 CommandName::Type => {
-                    assert!(!args.is_empty(), "type must have at least one arg");
-                    match parse_command(args[0]) {
-                        Command::BuiltIn(builtin) => {
-                            writeln!(stdout, "{} is a shell builtin", builtin)?
+                    if args.is_empty() {
+                        writeln!(stdout, "type: missing operand")?;
+                    } else {
+                        match parse_command(args[0]) {
+                            Command::BuiltIn(builtin) => {
+                                writeln!(stdout, "{} is a shell builtin", builtin)?
+                            }
+                            Command::Executable(executable) => writeln!(
+                                stdout,
+                                "{} is {}",
+                                executable,
+                                executable.file_path.display()
+                            )?,
+                            Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
                         }
-                        Command::Executable(executable) => writeln!(
-                            stdout,
-                            "{} is {}",
-                            executable,
-                            executable.file_path.display()
-                        )?,
-                        Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
                     }
                 }
             },
@@ -152,6 +154,7 @@ fn main() -> anyhow::Result<()> {
                     .args(args)
                     .output()?;
                 stdout.write_all(&output.stdout)?;
+                stdout.write_all(&output.stderr)?;
             }
             Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
         };
