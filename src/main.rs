@@ -159,16 +159,16 @@ fn main() -> anyhow::Result<()> {
                         writeln!(stdout, "cd: missing operand")?;
                     } else {
                         let new_dir = PathBuf::from(args[0]);
-                        let new_dir = if new_dir.is_absolute() {
-                            new_dir
-                        } else {
-                            working_dir.join(new_dir)
-                        };
-                        if new_dir.is_dir() {
-                            working_dir = new_dir;
-                            env::set_current_dir(&working_dir)?;
-                        } else {
-                            writeln!(stdout, "cd: {}: No such file or directory", args[0])?;
+                        let new_dir = working_dir.join(new_dir).canonicalize();
+
+                        match new_dir {
+                            Err(_) => {
+                                writeln!(stdout, "cd: {}: No such file or directory", args[0])?
+                            }
+                            Ok(new_dir) => {
+                                working_dir = new_dir;
+                                env::set_current_dir(&working_dir)?;
+                            }
                         }
                     }
                 }
