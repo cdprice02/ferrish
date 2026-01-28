@@ -22,11 +22,11 @@ struct BuiltInCommand {
 
 impl Display for BuiltInCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name.as_ref())
+        write!(f, "{}", self.name)
     }
 }
 
-#[derive(strum::EnumString, strum::AsRefStr, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(strum::EnumString, strum::AsRefStr, strum::Display, Debug, Clone, Copy, PartialEq, Eq)]
 enum BuiltInName {
     #[strum(serialize = "exit")]
     Exit,
@@ -137,7 +137,7 @@ fn main() -> anyhow::Result<()> {
                 BuiltInName::Echo => writeln!(stdout, "{}", args.join(" "))?,
                 BuiltInName::Type => {
                     if args.is_empty() {
-                        writeln!(stdout, "type: missing operand")?;
+                        writeln!(stdout, "{}: missing operand", name)?;
                     } else {
                         match parse_command(args[0]) {
                             Command::BuiltIn(builtin) => {
@@ -156,15 +156,17 @@ fn main() -> anyhow::Result<()> {
                 BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
                 BuiltInName::Cd => {
                     if args.is_empty() {
-                        writeln!(stdout, "cd: missing operand")?;
+                        writeln!(stdout, "{}: missing operand", name)?;
                     } else {
                         let new_dir = PathBuf::from(args[0]);
                         let new_dir = working_dir.join(new_dir).canonicalize();
 
                         match new_dir {
-                            Err(_) => {
-                                writeln!(stdout, "cd: {}: No such file or directory", args[0])?
-                            }
+                            Err(_) => writeln!(
+                                stdout,
+                                "{}: {}: No such file or directory",
+                                name, args[0]
+                            )?,
                             Ok(new_dir) => {
                                 working_dir = new_dir;
                                 env::set_current_dir(&working_dir)?;
