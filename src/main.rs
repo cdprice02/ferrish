@@ -36,6 +36,8 @@ enum BuiltInName {
     Type,
     #[strum(serialize = "pwd")]
     Pwd,
+    #[strum(serialize = "cd")]
+    Cd,
 }
 
 #[derive(Debug)]
@@ -152,6 +154,24 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
+                BuiltInName::Cd => {
+                    if args.is_empty() {
+                        writeln!(stdout, "cd: missing operand")?;
+                    } else {
+                        let new_dir = PathBuf::from(args[0]);
+                        let new_dir = if new_dir.is_absolute() {
+                            new_dir
+                        } else {
+                            working_dir.join(new_dir)
+                        };
+                        if new_dir.is_dir() {
+                            working_dir = new_dir;
+                            env::set_current_dir(&working_dir)?;
+                        } else {
+                            writeln!(stdout, "cd: {}: No such file or directory", args[0])?;
+                        }
+                    }
+                }
             },
             Command::Executable(executable) => {
                 let output = std::process::Command::new(executable.name())
