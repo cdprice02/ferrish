@@ -36,9 +36,16 @@ dependencies = [
  "anyhow",
  "bytes",
  "is_executable",
+ "soft-canonicalize",
  "strum",
  "thiserror",
 ]
+
+[[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "heck"
@@ -53,6 +60,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baabb8b4867b26294d818bf3f651a454b6901431711abb96e296245888d6e8c4"
 dependencies = [
  "windows-sys",
+]
+
+[[package]]
+name = "proc-canonicalize"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6127461ef34c8119591fc98e4046230f4f953bec84aaebfe326e3d82e8f383da"
+dependencies = [
+ "dunce",
 ]
 
 [[package]]
@@ -83,6 +99,16 @@ checksum = "0fa76aaf39101c457836aec0ce2316dbdc3ab723cdda1c6bd4e6ad4208acaca7"
 >>>>>>> 837571e (fix command parsing error handling)
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "soft-canonicalize"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "486e7a0425c05839bcaf98e562d676ea0861629f65b96c875f06fcd27f77dbfa"
+dependencies = [
+ "dunce",
+ "proc-canonicalize",
 ]
 
 [[package]]

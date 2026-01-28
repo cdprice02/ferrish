@@ -106,6 +106,21 @@ fn get_path_files() -> Vec<PathBuf> {
     .collect()
 }
 
+fn resolve_path(path: &PathBuf) -> io::Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path
+    } else if let Ok(stripped) = path.strip_prefix("~") {
+        let home_dir = env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let stripped = stripped.strip_prefix("/").unwrap_or(stripped);
+        &home_dir.join(stripped)
+    } else {
+        let current_dir = env::current_dir()?;
+        &current_dir.join(path)
+    };
+
+    soft_canonicalize::soft_canonicalize(path)
+}
+
 fn main() -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -155,23 +170,14 @@ fn main() -> anyhow::Result<()> {
                 }
                 BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
                 BuiltInName::Cd => {
-                    if args.is_empty() {
-                        writeln!(stdout, "{}: missing operand", name)?;
-                    } else {
-                        let new_dir = PathBuf::from(args[0]);
-                        let new_dir = working_dir.join(new_dir).canonicalize();
+                    let new_dir = PathBuf::from(args.first().unwrap_or(&"~"));
+                    let new_dir = resolve_path(&new_dir)?;
 
-                        match new_dir {
-                            Err(_) => writeln!(
-                                stdout,
-                                "{}: {}: No such file or directory",
-                                name, args[0]
-                            )?,
-                            Ok(new_dir) => {
-                                working_dir = new_dir;
-                                env::set_current_dir(&working_dir)?;
-                            }
-                        }
+                    if new_dir.exists() {
+                        working_dir = new_dir;
+                        env::set_current_dir(&working_dir)?;
+                    } else {
+                        writeln!(stdout, "{}: No such file or directory", args[0])?;
                     }
                 }
             },
