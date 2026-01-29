@@ -87,35 +87,32 @@ fn parse_command(command: &str) -> Command {
     }
 }
 
-fn get_path_files() -> Vec<PathBuf> {
+fn get_path_files() -> impl Iterator<Item = PathBuf> {
     let path = env::var_os("PATH").unwrap_or_default();
-    let dirs = env::split_paths(&path);
-    dirs.flat_map(|d| {
-        if d.is_dir() {
-            match fs::read_dir(d) {
-                Ok(entries) => entries
-                    .filter_map(|entry_res| entry_res.ok().map(|entry| entry.path()))
-                    .collect::<Vec<_>>(),
-                Err(_) => Vec::new(),
-            }
-        } else {
-            // Not a directory, skip it
-            Vec::new()
-        }
-    })
-    .collect()
+    env::split_paths(&path)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .filter(|d| d.is_dir() && d.exists())
+        .flat_map(|d| {
+            fs::read_dir(d)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .collect::<Vec<_>>()
+        })
 }
 
 fn resolve_path(path: &PathBuf) -> io::Result<PathBuf> {
     let path = if path.is_absolute() {
-        path
+        path.clone()
     } else if let Ok(stripped) = path.strip_prefix("~") {
         let home_dir = env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let stripped = stripped.strip_prefix("/").unwrap_or(stripped);
-        &home_dir.join(stripped)
+        home_dir.join(stripped)
     } else {
         let current_dir = env::current_dir()?;
-        &current_dir.join(path)
+        current_dir.join(path)
     };
 
     soft_canonicalize::soft_canonicalize(path)
@@ -170,21 +167,27 @@ fn main() -> anyhow::Result<()> {
                 }
                 BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
                 BuiltInName::Cd => {
-                    let new_dir = PathBuf::from(args.first().unwrap_or(&"~"));
+                    let target = args.first().unwrap_or(&"~");
+                    let new_dir = PathBuf::from(target);
                     let new_dir = resolve_path(&new_dir)?;
 
-                    if new_dir.exists() {
+                    if !new_dir.exists() {
+                        writeln!(stdout, "{}: no such file or directory: {}", name, target)?;
+                    } else if !new_dir.is_dir() {
+                        writeln!(stdout, "{}: not a directory: {}", name, target)?;
+                    } else if fs::metadata(&new_dir)?.permissions().readonly() {
+                        writeln!(stdout, "{}: permission denied: {}", name, target)?;
+                    } else {
                         working_dir = new_dir;
                         env::set_current_dir(&working_dir)?;
-                    } else {
-                        writeln!(stdout, "{}: No such file or directory", args[0])?;
                     }
                 }
             },
             Command::Executable(executable) => {
-                let output = std::process::Command::new(executable.name())
+                let child = std::process::Command::new(executable.file_path)
                     .args(args)
-                    .output()?;
+                    .spawn()?;
+                let output = child.wait_with_output()?;
                 stdout.write_all(&output.stdout)?;
                 stdout.write_all(&output.stderr)?;
             }
