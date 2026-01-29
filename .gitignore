@@ -6,15 +6,9 @@ target/
 **/mutants.out*/
 
 # IDE
+.DS_Store
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-
-# CodeCrafters-specific
-.codecrafters/
-codecrafters.yml
-codecrafters.yaml
-your_program.sh
