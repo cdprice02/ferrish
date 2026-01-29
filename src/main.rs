@@ -115,28 +115,27 @@ fn parse(buffer: &[u8]) -> (Command, Args) {
 }
 
 fn split_command_and_args(buffer: &[u8]) -> (&[u8], Vec<&[u8]>) {
-    let mut command: &[u8] = &[];
-    let mut args = Vec::<&[u8]>::new();
+    let mut parts = Vec::<&[u8]>::new();
     let mut start = 0;
 
     let buffer = buffer.trim_ascii();
     for (i, byte) in buffer.iter().enumerate() {
         if byte.is_ascii_whitespace() {
-            if command.is_empty() {
-                command = &buffer[start..i];
-            } else {
-                args.push(&buffer[start..i]);
+            if i - start > 0 {
+                parts.push(&buffer[start..i]);
             }
+
             start = i + 1;
         }
         // TODO: handle quotes
     }
 
-    if command.is_empty() {
-        command = buffer;
-    } else {
-        args.push(&buffer[start..]);
-    }
+    parts.push(&buffer[start..]);
+
+    let (command, args) = parts
+        .split_first()
+        .unwrap_or((parts.first().expect("at least one part"), &[]));
+    let args = args.into();
 
     (command, args)
 }
@@ -213,9 +212,8 @@ fn main() -> anyhow::Result<()> {
 
         let mut buffer = Vec::<u8>::new();
         stdin.read_until(b'\n', &mut buffer)?;
-        // Remove trailing newline
-        let buffer = &buffer[..buffer.len().saturating_sub(1)];
 
+        let buffer = buffer.trim_ascii();
         if buffer.is_empty() {
             // Empty command, just prompt again
             continue;
