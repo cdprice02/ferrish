@@ -175,21 +175,30 @@ fn main() -> anyhow::Result<()> {
                         writeln!(stdout, "{}: no such file or directory: {}", name, target)?;
                     } else if !new_dir.is_dir() {
                         writeln!(stdout, "{}: not a directory: {}", name, target)?;
-                    } else if fs::metadata(&new_dir)?.permissions().readonly() {
-                        writeln!(stdout, "{}: permission denied: {}", name, target)?;
                     } else {
-                        working_dir = new_dir;
-                        env::set_current_dir(&working_dir)?;
+                        match env::set_current_dir(new_dir) {
+                            Ok(()) => {
+                                working_dir = env::current_dir().expect("current_dir was just set");
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                                writeln!(stdout, "{}: permission denied: {}", name, target)?;
+                            }
+                            Err(e) => {
+                                writeln!(stdout, "{}: {}", name, e)?;
+                            }
+                        }
                     }
                 }
             },
             Command::Executable(executable) => {
-                let child = std::process::Command::new(executable.file_path)
+                let mut child = std::process::Command::new(executable.file_path.clone())
                     .args(args)
                     .spawn()?;
-                let output = child.wait_with_output()?;
-                stdout.write_all(&output.stdout)?;
-                stdout.write_all(&output.stderr)?;
+                let status = child.wait()?;
+
+                if !status.success() {
+                    writeln!(stdout, "{}: exited with status {}", executable, status)?;
+                }
             }
             Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
         };
