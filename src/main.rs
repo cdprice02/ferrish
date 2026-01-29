@@ -12,7 +12,19 @@ use std::{
 enum Command {
     BuiltIn(BuiltInCommand),
     Executable(ExecutableCommand),
-    Unrecognized(String),
+    Unrecognized(Vec<u8>),
+}
+
+macro_rules! builtin {
+    ($name:ident) => {
+        Command::BuiltIn(BuiltInCommand { name: $name })
+    };
+}
+
+macro_rules! unrecognized {
+    ($name:expr) => {
+        Command::Unrecognized($name.into())
+    };
 }
 
 #[derive(Debug)]
@@ -60,22 +72,86 @@ impl ExecutableCommand {
     }
 }
 
-fn parse_command(command: &str) -> Command {
-    macro_rules! builtin {
-        ($name:ident) => {
-            Command::BuiltIn(BuiltInCommand { name: $name })
-        };
+type Args = Vec<Arg>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Arg {
+    Literal(Vec<u8>),
+}
+
+impl Display for Arg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Arg::Literal(bytes) => write!(f, "{}", String::from_utf8_lossy(bytes)),
+        }
     }
+}
+
+impl From<&Arg> for PathBuf {
+    fn from(val: &Arg) -> Self {
+        match val {
+            Arg::Literal(_) => PathBuf::from(val.to_string()),
+        }
+    }
+}
+
+impl Arg {
+    fn to_command(&self) -> Command {
+        parse_command(match self {
+            Arg::Literal(bytes) => bytes,
+        })
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Arg::Literal(bytes.to_vec())
+    }
+}
+
+fn parse(buffer: &[u8]) -> (Command, Args) {
+    let (command, args) = split_command_and_args(buffer);
+    let command = parse_command(command);
+    let args = args.into_iter().map(parse_arg).collect();
+    (command, args)
+}
+
+fn split_command_and_args(buffer: &[u8]) -> (&[u8], Vec<&[u8]>) {
+    let mut parts = Vec::<&[u8]>::new();
+    let mut start = 0;
+
+    let buffer = buffer.trim_ascii();
+    for (i, byte) in buffer.iter().enumerate() {
+        if byte.is_ascii_whitespace() {
+            if i - start > 0 {
+                parts.push(&buffer[start..i]);
+            }
+
+            start = i + 1;
+        }
+        // TODO: handle quotes
+    }
+
+    parts.push(&buffer[start..]);
+
+    let (command, args) = parts
+        .split_first()
+        .unwrap_or((parts.first().expect("at least one part"), &[]));
+    let args = args.into();
+
+    (command, args)
+}
+
+fn parse_command(command: &[u8]) -> Command {
+    if !command.is_ascii() {
+        return unrecognized!(command);
+    }
+
+    let command = std::str::from_utf8(command).expect("checked ASCII above");
 
     let name = BuiltInName::from_str(command);
     if let Ok(name) = name {
         builtin!(name)
     } else {
-        for file in get_path_files() {
-            if !file.is_executable() {
-                continue;
-            }
-
+        for file in get_path_files().filter(|p| p.is_executable()) {
             let executable_command = ExecutableCommand { file_path: file };
 
             if executable_command.name() == command {
@@ -83,8 +159,12 @@ fn parse_command(command: &str) -> Command {
             }
         }
 
-        Command::Unrecognized(command.to_string())
+        unrecognized!(command)
     }
+}
+
+fn parse_arg(arg: &[u8]) -> Arg {
+    Arg::Literal(arg.to_vec())
 }
 
 fn get_path_files() -> impl Iterator<Item = PathBuf> {
@@ -127,31 +207,36 @@ fn main() -> anyhow::Result<()> {
     let mut working_dir = env::current_dir()?;
 
     loop {
-        write!(stdout, "$ ")?;
+        write!(stdout, "🦀> ")?;
         stdout.flush()?;
 
-        let mut buffer = String::new();
-        stdin.read_line(&mut buffer)?;
-        let buffer = buffer.trim();
+        let mut buffer = Vec::<u8>::new();
+        stdin.read_until(b'\n', &mut buffer)?;
 
-        let (command, args) = if buffer.is_empty() {
-            (buffer, Vec::new())
-        } else {
-            let mut parts = buffer.split_whitespace();
-            let command = parts.next().expect("buffer is not empty");
-            let args = parts.collect::<Vec<_>>();
-            (command, args)
-        };
+        let buffer = buffer.trim_ascii();
+        if buffer.is_empty() {
+            // Empty command, just prompt again
+            continue;
+        }
 
-        match parse_command(command) {
+        let (command, args) = parse(buffer);
+
+        match command {
             Command::BuiltIn(BuiltInCommand { name }) => match name {
                 BuiltInName::Exit => break,
-                BuiltInName::Echo => writeln!(stdout, "{}", args.join(" "))?,
+                BuiltInName::Echo => writeln!(
+                    stdout,
+                    "{}",
+                    args.iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )?,
                 BuiltInName::Type => {
                     if args.is_empty() {
                         writeln!(stdout, "{}: missing operand", name)?;
                     } else {
-                        match parse_command(args[0]) {
+                        match args.first().expect("at least one arg").to_command() {
                             Command::BuiltIn(builtin) => {
                                 writeln!(stdout, "{} is a shell builtin", builtin)?
                             }
@@ -161,15 +246,17 @@ fn main() -> anyhow::Result<()> {
                                 executable,
                                 executable.file_path.display()
                             )?,
-                            Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
+                            Command::Unrecognized(name) => {
+                                writeln!(stdout, "{}: not found", String::from_utf8_lossy(&name))?
+                            }
                         }
                     }
                 }
                 BuiltInName::Pwd => writeln!(stdout, "{}", working_dir.display())?,
                 BuiltInName::Cd => {
-                    let target = args.first().unwrap_or(&"~");
-                    let new_dir = PathBuf::from(target);
-                    let new_dir = resolve_path(&new_dir)?;
+                    let default_target = Arg::from_bytes(b"~");
+                    let target = args.first().unwrap_or(&default_target);
+                    let new_dir = resolve_path(&target.into())?;
 
                     if !new_dir.exists() {
                         writeln!(stdout, "{}: no such file or directory: {}", name, target)?;
@@ -191,6 +278,7 @@ fn main() -> anyhow::Result<()> {
                 }
             },
             Command::Executable(executable) => {
+                let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
                 let mut child = std::process::Command::new(executable.file_path.clone())
                     .args(args)
                     .spawn()?;
@@ -200,7 +288,9 @@ fn main() -> anyhow::Result<()> {
                     writeln!(stdout, "{}: exited with status {}", executable, status)?;
                 }
             }
-            Command::Unrecognized(name) => writeln!(stdout, "{}: not found", name)?,
+            Command::Unrecognized(name) => {
+                writeln!(stdout, "{}: not found", String::from_utf8_lossy(&name))?
+            }
         };
         stdout.flush()?;
     }
