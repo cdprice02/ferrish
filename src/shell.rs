@@ -5,6 +5,7 @@ use crate::{
     arg::Args,
     error::ShellResult,
     executor,
+    exit::ExitCode,
     io::{ShellIo, StandardIo},
     parser,
 };
@@ -56,11 +57,14 @@ impl<IO: ShellIo> Shell<IO> {
 
             let (command, args) = parser::parse(buffer);
             match self.execute_command(command.clone(), args) {
-                Ok(should_continue) => {
-                    if !should_continue {
-                        break;
-                    }
+                Ok(Some(exit_code)) => {
+                    // TODO: set exit code in caller env instead of printing
+                    self.io
+                        .borrow_mut()
+                        .write_out(format!("Exiting with code {}\n", exit_code).as_bytes())?;
+                    break;
                 }
+                Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let e = anyhow::Error::new(e).context(command);
@@ -77,9 +81,7 @@ impl<IO: ShellIo> Shell<IO> {
         Ok(())
     }
 
-    pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<usize> {
-        let mut count = 0;
-
+    pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<ExitCode> {
         for line in script {
             let buffer = line.as_bytes();
             let buffer = buffer.trim_ascii();
@@ -90,18 +92,20 @@ impl<IO: ShellIo> Shell<IO> {
             }
 
             let (command, args) = parser::parse(buffer);
-            let should_continue = self.execute_command(command, args)?;
-            count += 1;
-
-            if !should_continue {
-                break;
+            if let Some(exit_code) = self.execute_command(command, args)? {
+                // TODO: set exit code in caller env instead of returning
+                return Ok(exit_code);
             }
         }
 
-        Ok(count)
+        Ok(ExitCode::SUCCESS)
     }
 
-    pub fn execute_command(&mut self, command: Command, args: Args) -> ShellResult<bool> {
+    pub fn execute_command(
+        &mut self,
+        command: Command,
+        args: Args,
+    ) -> ShellResult<Option<ExitCode>> {
         // Adapters to convert ShellIo trait to std::io::Write
         struct OutWriter<'a, IO: ShellIo> {
             io: &'a RefCell<IO>,

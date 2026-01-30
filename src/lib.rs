@@ -3,6 +3,7 @@ pub mod command;
 pub mod env;
 pub mod error;
 pub mod executor;
+pub mod exit;
 pub mod fs;
 pub mod io {
     pub use crate::io_internal::{ShellIo, StandardIo};
