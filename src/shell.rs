@@ -101,7 +101,7 @@ impl<IO: ShellIo> Shell<IO> {
         Ok(count)
     }
 
-    pub fn execute_command(&mut self, command: Command, args: Args) -> ShellResult {
+    pub fn execute_command(&mut self, command: Command, args: Args) -> ShellResult<bool> {
         // Adapters to convert ShellIo trait to std::io::Write
         struct OutWriter<'a, IO: ShellIo> {
             io: &'a RefCell<IO>,

@@ -5,7 +5,7 @@ use crate::command::builtin::BuiltInName;
 use thiserror::Error;
 
 /// Wrapper around anyhow::Result for shell execution results
-pub type ShellResult = anyhow::Result<bool, ShellError>;
+pub type ShellResult<T> = anyhow::Result<T, ShellError>;
 
 /// Errors that can occur during command execution
 ///
@@ -24,11 +24,11 @@ pub enum ShellError {
     #[error("{arg}: no such file or directory")]
     FileNotFound { arg: Arg },
 
-    #[error("{arg}: not a directory")]
-    NotADirectory { arg: Arg },
-
     #[error("{arg}: is a directory")]
     IsADirectory { arg: Arg },
+
+    #[error("{arg}: not a directory")]
+    NotADirectory { arg: Arg },
 
     // --- Process execution ---
     #[error("exited with status {0}")]
