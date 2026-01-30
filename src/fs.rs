@@ -10,9 +10,7 @@ pub(crate) fn resolve_path(path: &PathBuf) -> io::Result<PathBuf> {
         let stripped = stripped.strip_prefix("/").unwrap_or(stripped);
         home_dir.join(stripped)
     } else {
-        let current_dir = env::current_dir()
-            .unwrap_or_else(|| env::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        current_dir.join(path)
+        env::current_dir()?.join(path)
     };
 
     canonicalize_path(path)
