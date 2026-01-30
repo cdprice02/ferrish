@@ -20,15 +20,11 @@ impl BuiltInCommand {
 }
 
 #[derive(strum::EnumString, strum::AsRefStr, strum::Display, Debug, Clone, Copy, PartialEq, Eq)]
+#[strum(serialize_all = "lowercase")]
 pub enum BuiltInName {
-    #[strum(serialize = "exit")]
     Exit,
-    #[strum(serialize = "echo")]
     Echo,
-    #[strum(serialize = "type")]
     Type,
-    #[strum(serialize = "pwd")]
     Pwd,
-    #[strum(serialize = "cd")]
     Cd,
 }

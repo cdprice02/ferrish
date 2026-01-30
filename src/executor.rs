@@ -4,38 +4,25 @@ use crate::{
     Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
-    env, fs,
+    env,
+    error::{ShellError, ShellResult},
+    fs,
 };
 
-pub fn execute<WO: Write, WE: Write>(
-    command: Command,
-    args: Args,
-    out_writer: &mut WO,
-    err_writer: &mut WE,
-) -> anyhow::Result<bool> {
+pub fn execute<W: Write>(command: Command, args: Args, out_writer: &mut W) -> ShellResult {
     // TODO: create ExitCode type instead of bool
     match command {
-        Command::BuiltIn(builtin) => execute_builtin(builtin, args, out_writer, err_writer),
-        Command::Executable(executable) => {
-            execute_executable(executable, args, out_writer, err_writer)
-        }
-        Command::Unrecognized(name) => {
-            writeln!(
-                err_writer,
-                "{}: command not found",
-                String::from_utf8_lossy(&name)
-            )?;
-            Ok(true)
-        }
+        Command::BuiltIn(builtin) => execute_builtin(builtin, args, out_writer),
+        Command::Executable(executable) => execute_executable(executable, args, out_writer),
+        Command::Unrecognized(_) => Err(ShellError::CommandNotFound),
     }
 }
 
-fn execute_builtin<WO: Write, WE: Write>(
+fn execute_builtin<W: Write>(
     builtin: BuiltInCommand,
     args: Args,
-    out_writer: &mut WO,
-    err_writer: &mut WE,
-) -> anyhow::Result<bool> {
+    out_writer: &mut W,
+) -> ShellResult {
     let name = builtin.name();
     match name {
         BuiltInName::Exit => return Ok(false),
@@ -49,22 +36,20 @@ fn execute_builtin<WO: Write, WE: Write>(
         )?,
         BuiltInName::Type => {
             if args.is_empty() {
-                writeln!(err_writer, "{}: missing operand", name)?;
-            } else {
-                match Command::from(args.first().expect("at least one arg")) {
-                    Command::BuiltIn(builtin) => {
-                        writeln!(out_writer, "{} is a shell builtin", builtin)?
-                    }
-                    Command::Executable(executable) => writeln!(
-                        out_writer,
-                        "{} is {}",
-                        executable,
-                        executable.file_path().display()
-                    )?,
-                    Command::Unrecognized(name) => {
-                        writeln!(err_writer, "{}: not found", String::from_utf8_lossy(&name))?
-                    }
+                return Err(ShellError::MissingOperand { builtin: name });
+            }
+
+            match Command::from(args.first().expect("at least one arg")) {
+                Command::BuiltIn(builtin) => {
+                    writeln!(out_writer, "{} is a shell builtin", builtin)?
                 }
+                Command::Executable(executable) => writeln!(
+                    out_writer,
+                    "{} is {}",
+                    executable,
+                    executable.file_path().display()
+                )?,
+                Command::Unrecognized(_) => return Err(ShellError::CommandNotFound),
             }
         }
         BuiltInName::Pwd => writeln!(
@@ -78,42 +63,36 @@ fn execute_builtin<WO: Write, WE: Write>(
             let new_dir = fs::resolve_path(&target.into())?;
 
             if !new_dir.exists() {
-                writeln!(
-                    err_writer,
-                    "{}: no such file or directory: {}",
-                    name, target
-                )?;
+                return Err(ShellError::FileNotFound {
+                    arg: target.clone(),
+                });
             } else if !new_dir.is_dir() {
-                writeln!(err_writer, "{}: not a directory: {}", name, target)?;
-            } else {
-                match env::set_current_dir(&new_dir) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                        writeln!(err_writer, "{}: permission denied: {}", name, target)?;
-                    }
-                    Err(e) => {
-                        writeln!(err_writer, "{}: {}", name, e)?;
-                    }
-                }
+                return Err(ShellError::NotADirectory {
+                    arg: target.clone(),
+                });
             }
+
+            env::set_current_dir(&new_dir)?;
         }
     }
 
     Ok(true)
 }
 
-fn execute_executable<WO: Write, WE: Write>(
+fn execute_executable<W: Write>(
     executable: crate::command::executable::ExecutableCommand,
     args: Args,
-    out_writer: &mut WO,
-    _err_writer: &mut WE,
-) -> anyhow::Result<bool> {
+    out_writer: &mut W,
+) -> ShellResult {
     let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     let mut child = std::process::Command::new(executable.file_path())
         .args(args)
         .spawn()?;
     let status = child.wait()?;
 
+    if !status.success() {
+        return Err(ShellError::NonZeroExit(status));
+    }
     if !status.success() {
         writeln!(out_writer, "{}: exited with status {}", executable, status)?;
     }

@@ -3,6 +3,7 @@ use std::{cell::RefCell, io};
 use crate::{
     Command,
     arg::Args,
+    error::ShellResult,
     executor,
     io::{ShellIo, StandardIo},
     parser,
@@ -23,9 +24,8 @@ impl Shell<()> {
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
-    ///     .with_standard_io()?
+    ///     .with_std_io()
     ///     .run()?;
-    /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn builder() -> ShellBuilder {
         ShellBuilder
@@ -41,7 +41,6 @@ impl<IO: ShellIo> Shell<IO> {
         self.io.borrow_mut()
     }
 
-    /// Run the shell REPL
     pub fn run(&mut self) -> anyhow::Result<()> {
         loop {
             self.io.borrow_mut().write_out(b"\xF0\x9F\xA6\x80> ")?; // 🦀>
@@ -56,51 +55,26 @@ impl<IO: ShellIo> Shell<IO> {
             }
 
             let (command, args) = parser::parse(buffer);
-            let should_continue = self.execute_command(command, args)?;
+            match self.execute_command(command.clone(), args) {
+                Ok(should_continue) => {
+                    if !should_continue {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let fatal = e.is_fatal();
+                    let e = anyhow::Error::new(e).context(command);
+                    let err_msg = format!("{:#}\n", e);
+                    self.io.borrow_mut().write_err(err_msg.as_bytes())?;
 
-            if !should_continue {
-                break;
+                    if fatal {
+                        return Err(e);
+                    }
+                }
             }
         }
 
         Ok(())
-    }
-
-    pub fn execute_command(&mut self, command: Command, args: Args) -> anyhow::Result<bool> {
-        // Adapters to convert ShellIo trait to std::io::Write
-        struct OutWriter<'a, IO: ShellIo> {
-            io: &'a RefCell<IO>,
-        }
-        struct ErrWriter<'a, IO: ShellIo> {
-            io: &'a RefCell<IO>,
-        }
-
-        impl<IO: ShellIo> std::io::Write for OutWriter<'_, IO> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.io.borrow_mut().write_out(buf)?;
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.io.borrow_mut().flush()
-            }
-        }
-
-        impl<IO: ShellIo> std::io::Write for ErrWriter<'_, IO> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.io.borrow_mut().write_err(buf)?;
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.io.borrow_mut().flush()
-            }
-        }
-
-        let mut out_writer = OutWriter { io: &self.io };
-        let mut err_writer = ErrWriter { io: &self.io };
-
-        executor::execute(command, args, &mut out_writer, &mut err_writer)
     }
 
     pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<usize> {
@@ -126,6 +100,28 @@ impl<IO: ShellIo> Shell<IO> {
 
         Ok(count)
     }
+
+    pub fn execute_command(&mut self, command: Command, args: Args) -> ShellResult {
+        // Adapters to convert ShellIo trait to std::io::Write
+        struct OutWriter<'a, IO: ShellIo> {
+            io: &'a RefCell<IO>,
+        }
+
+        impl<IO: ShellIo> std::io::Write for OutWriter<'_, IO> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.io.borrow_mut().write_out(buf)?;
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.io.borrow_mut().flush()
+            }
+        }
+
+        let mut out_writer = OutWriter { io: &self.io };
+
+        executor::execute(command, args, &mut out_writer)
+    }
 }
 
 pub struct ShellBuilder;
@@ -138,11 +134,10 @@ impl ShellBuilder {
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
-    ///     .with_standard_io()
+    ///     .with_std_io()
     ///     .run()?;
-    /// # Ok::<(), anyhow::Error>(())
     /// ```
-    pub fn with_standard_io(
+    pub fn with_std_io(
         self,
     ) -> Shell<StandardIo<io::BufReader<io::Stdin>, io::Stdout, io::Stderr>> {
         let stdin = io::BufReader::new(io::stdin());
@@ -165,7 +160,6 @@ impl ShellBuilder {
     /// let mut shell = Shell::builder()
     ///     .with_io(io)
     ///     .run()?;
-    /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn with_io<IO: ShellIo>(self, io: IO) -> Shell<IO> {
         Shell {

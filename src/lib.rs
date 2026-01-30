@@ -1,6 +1,7 @@
 pub mod arg;
 pub mod command;
 pub mod env;
+pub mod error;
 pub mod executor;
 pub mod fs;
 pub mod io {
@@ -38,5 +39,5 @@ pub use shell::Shell;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn run() -> anyhow::Result<()> {
-    Shell::builder().with_standard_io().run()
+    Shell::builder().with_std_io().run()
 }
