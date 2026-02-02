@@ -1,0 +1,78 @@
+name: lint build test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dev:
+    name: dev (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: build dev
+        run: cargo build --verbose
+      - name: test dev
+        run: cargo test --verbose
+
+  release:
+    name: release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: build release
+        run: cargo build --release --verbose
+      - name: test release
+        run: cargo test --release --verbose
+      - name: upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-${{ matrix.os }}
+          path: target/release/
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: install tarpaulin
+        run: cargo install cargo-tarpaulin
+      - name: run coverage
+        run: cargo tarpaulin --out Xml
+      - name: upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: tarpaulin-report.xml
+      - name: upload to coveralls
+        env:
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
+        run: cargo tarpaulin --coveralls $COVERALLS_REPO_TOKEN
