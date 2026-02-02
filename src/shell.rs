@@ -25,8 +25,7 @@ impl Shell<()> {
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
-    ///     .with_std_io()
-    ///     .run()?;
+    ///     .with_std_io();
     /// ```
     pub fn builder() -> ShellBuilder {
         ShellBuilder
@@ -48,9 +47,12 @@ impl<IO: ShellIo> Shell<IO> {
             self.io.borrow_mut().flush()?;
 
             let mut buffer = Vec::<u8>::new();
-            self.io.borrow_mut().read_line(&mut buffer)?;
-            let buffer = buffer.trim_ascii();
+            let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
+            if bytes == 0 {
+                continue;
+            }
 
+            let buffer = buffer.trim_ascii();
             if buffer.is_empty() {
                 continue;
             }
@@ -139,7 +141,6 @@ impl ShellBuilder {
     ///
     /// let mut shell = Shell::builder()
     ///     .with_std_io()
-    ///     .run()?;
     /// ```
     pub fn with_std_io(
         self,
@@ -162,8 +163,7 @@ impl ShellBuilder {
     ///
     /// let io = MockIo::from_lines(&["echo test", "exit"]);
     /// let mut shell = Shell::builder()
-    ///     .with_io(io)
-    ///     .run()?;
+    ///     .with_io(io);
     /// ```
     pub fn with_io<IO: ShellIo>(self, io: IO) -> Shell<IO> {
         Shell {

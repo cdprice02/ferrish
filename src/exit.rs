@@ -24,7 +24,14 @@ impl From<u8> for ExitCode {
 
 impl From<std::process::ExitStatus> for ExitCode {
     fn from(val: std::process::ExitStatus) -> Self {
-        ExitCode(val.code().unwrap_or(1) as u8)
+        let raw = val.code().unwrap_or(1);
+        let code = if raw < 0 || raw > u8::MAX as i32 {
+            ExitCode::FAILURE.0
+        } else {
+            raw as u8
+        };
+
+        ExitCode(code)
     }
 }
 

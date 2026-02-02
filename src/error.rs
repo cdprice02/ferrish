@@ -1,10 +1,9 @@
 use std::process::ExitStatus;
 
 use crate::arg::Arg;
-use crate::command::builtin::BuiltInName;
 use thiserror::Error;
 
-/// Wrapper around anyhow::Result for shell execution results
+/// Convenience result type for shell execution results
 pub type ShellResult<T> = anyhow::Result<T, ShellError>;
 
 /// Errors that can occur during command execution
@@ -17,8 +16,8 @@ pub enum ShellError {
     #[error("command not found")]
     CommandNotFound,
 
-    #[error("{builtin}: missing operand")]
-    MissingOperand { builtin: BuiltInName },
+    #[error("missing operand")]
+    MissingOperand,
 
     // --- File system ---
     #[error("{arg}: no such file or directory")]

@@ -75,9 +75,7 @@ fn execute_echo<W: Write>(args: Args, out_writer: &mut W) -> ShellResult<()> {
 
 fn execute_type<W: Write>(args: Args, out_writer: &mut W) -> ShellResult<()> {
     if args.is_empty() {
-        return Err(ShellError::MissingOperand {
-            builtin: BuiltInName::Type,
-        });
+        return Err(ShellError::MissingOperand);
     }
 
     // TODO: get type without fully parsing the arg
@@ -108,8 +106,9 @@ fn execute_executable(
     let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     let mut child = std::process::Command::new(executable.file_path())
         .args(args)
-        .spawn()?;
-    let status = child.wait()?;
+        .spawn()
+        .map_err(ShellError::SpawnFailed)?;
+    let status = child.wait().map_err(ShellError::WaitFailed)?;
 
     if !status.success() {
         return Err(ShellError::NonZeroExit(status));
