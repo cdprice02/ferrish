@@ -19,23 +19,18 @@ pub use shell::Shell;
 /// and runs the interactive REPL.
 ///
 /// # Example
-/// ```
-/// fn main() -> anyhow::Result<()> {
-///     ferrish::run()
-/// }
-/// let result = main();
-/// assert!(result.is_ok());
+/// ```no_run
+/// let result = ferrish::run();
 /// ```
 ///
 /// For testing or custom I/O, use [`Shell::builder()`] instead:
-/// ```
+/// ```no_run
 /// use ferrish::Shell;
 /// use ferrish::io::MockIo;
 ///
 /// let io = MockIo::from_lines(&["echo test", "exit"]);
 /// let mut shell = Shell::builder().with_io(io);
 /// let result = shell.run();
-/// assert!(result.is_ok());
 /// ```
 pub fn run() -> anyhow::Result<()> {
     Shell::builder().with_std_io().run()

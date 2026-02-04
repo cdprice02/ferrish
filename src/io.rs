@@ -7,9 +7,8 @@ pub trait ShellIo {
 
     fn read_line(&mut self, buffer: &mut Vec<u8>) -> io::Result<usize> {
         let mut str = String::new();
-        self.reader().read_line(&mut str).map(|n| {
+        self.reader().read_line(&mut str).inspect(|_| {
             buffer.extend_from_slice(str.as_bytes());
-            n
         })
     }
 }

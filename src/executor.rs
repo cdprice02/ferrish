@@ -186,4 +186,6 @@ mod tests {
             "Expected CommandNotFound error"
         );
     }
+
+    // TODO: test execute_cd and execute_executable (requires env and fs mocking)
 }

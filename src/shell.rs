@@ -73,7 +73,7 @@ impl<IO: ShellIo> Shell<IO> {
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let e = anyhow::Error::new(e).context(command);
-                    writeln!(self.io.borrow_mut().err_writer(), "{:#}", e);
+                    writeln!(self.io.borrow_mut().err_writer(), "{:#}", e)?;
 
                     if fatal {
                         return Err(e);
@@ -124,7 +124,7 @@ impl ShellBuilder {
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
-    ///     .with_std_io()
+    ///     .with_std_io();
     /// ```
     pub fn with_std_io(self) -> Shell<StandardIo> {
         Shell {
