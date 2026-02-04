@@ -1,4 +1,4 @@
-use std::{cell::RefCell, io};
+use std::cell::RefCell;
 
 use crate::{
     Command,
@@ -14,8 +14,7 @@ pub struct Shell<IO> {
     io: RefCell<IO>,
 }
 
-pub type StandardShell =
-    Shell<StandardIo<io::StdinLock<'static>, io::StdoutLock<'static>, io::StderrLock<'static>>>;
+pub type StandardShell = Shell<StandardIo>;
 
 impl Shell<()> {
     /// Create a shell builder
@@ -43,8 +42,10 @@ impl<IO: ShellIo> Shell<IO> {
 
     pub fn run(&mut self) -> anyhow::Result<()> {
         loop {
-            self.io.borrow_mut().write_out(b"\xF0\x9F\xA6\x80> ")?; // 🦀>
-            self.io.borrow_mut().flush()?;
+            self.io
+                .borrow_mut()
+                .out_writer()
+                .write_all(b"\xF0\x9F\xA6\x80> ")?; // 🦀>
 
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
@@ -61,17 +62,18 @@ impl<IO: ShellIo> Shell<IO> {
             match self.execute_command(command.clone(), args) {
                 Ok(Some(exit_code)) => {
                     // TODO: set exit code in caller env instead of printing
-                    self.io
-                        .borrow_mut()
-                        .write_out(format!("Exiting with code {}\n", exit_code).as_bytes())?;
+                    writeln!(
+                        self.io.borrow_mut().out_writer(),
+                        "Exiting with code {}",
+                        exit_code
+                    )?;
                     break;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let e = anyhow::Error::new(e).context(command);
-                    let err_msg = format!("{:#}\n", e);
-                    self.io.borrow_mut().write_err(err_msg.as_bytes())?;
+                    writeln!(self.io.borrow_mut().err_writer(), "{:#}", e);
 
                     if fatal {
                         return Err(e);
@@ -108,25 +110,7 @@ impl<IO: ShellIo> Shell<IO> {
         command: Command,
         args: Args,
     ) -> ShellResult<Option<ExitCode>> {
-        // Adapters to convert ShellIo trait to std::io::Write
-        struct OutWriter<'a, IO: ShellIo> {
-            io: &'a RefCell<IO>,
-        }
-
-        impl<IO: ShellIo> std::io::Write for OutWriter<'_, IO> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.io.borrow_mut().write_out(buf)?;
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.io.borrow_mut().flush()
-            }
-        }
-
-        let mut out_writer = OutWriter { io: &self.io };
-
-        executor::execute(command, args, &mut out_writer)
+        executor::execute(command, args, &mut *self.io.borrow_mut())
     }
 }
 
@@ -142,15 +126,9 @@ impl ShellBuilder {
     /// let mut shell = Shell::builder()
     ///     .with_std_io()
     /// ```
-    pub fn with_std_io(
-        self,
-    ) -> Shell<StandardIo<io::BufReader<io::Stdin>, io::Stdout, io::Stderr>> {
-        let stdin = io::BufReader::new(io::stdin());
-        let stdout = io::stdout();
-        let stderr = io::stderr();
-
+    pub fn with_std_io(self) -> Shell<StandardIo> {
         Shell {
-            io: RefCell::new(StandardIo::new(stdin, stdout, stderr)),
+            io: RefCell::new(StandardIo::default()),
         }
     }
 

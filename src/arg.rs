@@ -4,6 +4,7 @@ use crate::{Command, parser::parse_command};
 
 pub type Args = Vec<Arg>;
 
+/// Represents a shell command argument
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
     Literal(Vec<u8>),
@@ -14,6 +15,12 @@ impl std::fmt::Display for Arg {
         match self {
             Arg::Literal(bytes) => write!(f, "{}", String::from_utf8_lossy(bytes)),
         }
+    }
+}
+
+impl From<&str> for Arg {
+    fn from(val: &str) -> Self {
+        Arg::from(val.as_bytes())
     }
 }
 

@@ -44,6 +44,29 @@ pub enum ShellError {
     Io(#[from] std::io::Error),
 }
 
+impl PartialEq for ShellError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::FileNotFound { arg: l_arg }, Self::FileNotFound { arg: r_arg }) => {
+                l_arg == r_arg
+            }
+            (Self::IsADirectory { arg: l_arg }, Self::IsADirectory { arg: r_arg }) => {
+                l_arg == r_arg
+            }
+            (Self::NotADirectory { arg: l_arg }, Self::NotADirectory { arg: r_arg }) => {
+                l_arg == r_arg
+            }
+            (Self::NonZeroExit(l0), Self::NonZeroExit(r0)) => l0 == r0,
+            (Self::SpawnFailed(l0), Self::SpawnFailed(r0)) => {
+                l0.raw_os_error() == r0.raw_os_error()
+            }
+            (Self::WaitFailed(l0), Self::WaitFailed(r0)) => l0.raw_os_error() == r0.raw_os_error(),
+            (Self::Io(l0), Self::Io(r0)) => l0.raw_os_error() == r0.raw_os_error(),
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
 impl ShellError {
     /// Check if this error is fatal (should stop execution)
     pub fn is_fatal(&self) -> bool {

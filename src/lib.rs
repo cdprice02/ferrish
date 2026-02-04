@@ -5,13 +5,9 @@ pub mod error;
 pub mod executor;
 pub mod exit;
 pub mod fs;
-pub mod io {
-    pub use crate::io_internal::{ShellIo, StandardIo};
-}
+pub mod io;
 pub mod parser;
 pub mod shell;
-
-mod io_internal;
 
 pub use arg::Arg;
 pub use command::Command;
@@ -23,21 +19,23 @@ pub use shell::Shell;
 /// and runs the interactive REPL.
 ///
 /// # Example
-/// ```no_run
+/// ```
 /// fn main() -> anyhow::Result<()> {
 ///     ferrish::run()
 /// }
+/// let result = main();
+/// assert!(result.is_ok());
 /// ```
 ///
 /// For testing or custom I/O, use [`Shell::builder()`] instead:
-/// ```no_run
+/// ```
 /// use ferrish::Shell;
 /// use ferrish::io::MockIo;
 ///
 /// let io = MockIo::from_lines(&["echo test", "exit"]);
 /// let mut shell = Shell::builder().with_io(io);
-/// shell.run()?;
-/// # Ok::<(), anyhow::Error>(())
+/// let result = shell.run();
+/// assert!(result.is_ok());
 /// ```
 pub fn run() -> anyhow::Result<()> {
     Shell::builder().with_std_io().run()
