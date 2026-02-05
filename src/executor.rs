@@ -142,8 +142,8 @@ mod tests {
         assert!(result.is_ok());
         let exit_code = result.unwrap();
         assert_eq!(exit_code, None);
-        let output = io.output_as_string();
-        assert_eq!(output, "Hello World\n");
+        let output = io.output();
+        assert_eq!(output, b"Hello World\n");
     }
 
     #[test]
@@ -151,8 +151,8 @@ mod tests {
         let args: Vec<Arg> = vec![];
         let mut io = MockIo::empty();
         execute_echo(args, &mut io).unwrap();
-        let output = io.output_as_string();
-        assert_eq!(output, "\n");
+        let output = io.output();
+        assert_eq!(output, b"\n");
     }
 
     #[test]
@@ -160,8 +160,8 @@ mod tests {
         let args = vec![Arg::from("echo")];
         let mut io = MockIo::empty();
         execute_type(args, &mut io).unwrap();
-        let output = io.output_as_string();
-        assert_eq!(output, "echo is a shell builtin\n");
+        let output = io.output();
+        assert_eq!(output, b"echo is a shell builtin\n");
     }
 
     #[test]
@@ -169,8 +169,8 @@ mod tests {
         let args = vec![Arg::from("cargo")];
         let mut io = MockIo::empty();
         execute_type(args, &mut io).unwrap();
-        let output = io.output_as_string();
-        assert!(output.contains("cargo is "));
+        let output = io.output();
+        assert!(output.starts_with(b"cargo is "));
     }
 
     #[test]

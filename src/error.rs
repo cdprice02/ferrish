@@ -20,13 +20,13 @@ pub enum ShellError {
     MissingOperand,
 
     // --- File system ---
-    #[error("{arg}: no such file or directory")]
+    #[error("no such file or directory: {arg}")]
     FileNotFound { arg: Arg },
 
-    #[error("{arg}: is a directory")]
+    #[error("is a directory: {arg}")]
     IsADirectory { arg: Arg },
 
-    #[error("{arg}: not a directory")]
+    #[error("not a directory: {arg}")]
     NotADirectory { arg: Arg },
 
     // --- Process execution ---

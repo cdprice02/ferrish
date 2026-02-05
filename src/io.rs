@@ -77,12 +77,12 @@ impl MockIo {
         Self::new(input_lines.concat())
     }
 
-    pub fn output_as_string(&self) -> String {
-        String::from_utf8_lossy(&self.output).to_string()
+    pub fn output(&self) -> &[u8] {
+        &self.output
     }
 
-    pub fn error_as_string(&self) -> String {
-        String::from_utf8_lossy(&self.error).to_string()
+    pub fn error(&self) -> &[u8] {
+        &self.error
     }
 }
 

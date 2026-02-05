@@ -1,14 +1,14 @@
 use std::{env, fs, io, path::PathBuf};
 
-pub(crate) fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     env::home_dir()
 }
 
-pub(crate) fn current_dir() -> Result<PathBuf, io::Error> {
+pub fn current_dir() -> Result<PathBuf, io::Error> {
     env::current_dir()
 }
 
-pub(crate) fn set_current_dir(path: &PathBuf) -> io::Result<()> {
+pub fn set_current_dir(path: &PathBuf) -> io::Result<()> {
     env::set_current_dir(path)
 }
 

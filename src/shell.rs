@@ -10,17 +10,20 @@ use crate::{
     parser,
 };
 
-pub struct Shell<IO> {
+pub struct Shell<IO: ShellIo + ?Sized> {
     io: RefCell<IO>,
 }
 
 pub type StandardShell = Shell<StandardIo>;
 
-impl Shell<()> {
+impl Shell<dyn ShellIo> {
+    pub const fn prefix() -> &'static str {
+        "\u{1F980}> " // 🦀>
+    }
     /// Create a shell builder
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
@@ -45,7 +48,7 @@ impl<IO: ShellIo> Shell<IO> {
             self.io
                 .borrow_mut()
                 .out_writer()
-                .write_all(b"\xF0\x9F\xA6\x80> ")?; // 🦀>
+                .write_all(Shell::prefix().as_bytes())?;
 
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
@@ -60,13 +63,8 @@ impl<IO: ShellIo> Shell<IO> {
 
             let (command, args) = parser::parse(buffer);
             match self.execute_command(command.clone(), args) {
-                Ok(Some(exit_code)) => {
-                    // TODO: set exit code in caller env instead of printing
-                    writeln!(
-                        self.io.borrow_mut().out_writer(),
-                        "Exiting with code {}",
-                        exit_code
-                    )?;
+                Ok(Some(_exit_code)) => {
+                    // TODO: set exit code in caller env
                     break;
                 }
                 Ok(None) => {}
@@ -120,7 +118,7 @@ impl ShellBuilder {
     /// Configure the shell with standard I/O (stdin/stdout/stderr)
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
@@ -135,7 +133,7 @@ impl ShellBuilder {
     /// Configure the shell with custom I/O
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     /// use ferrish::io::MockIo;
     ///
