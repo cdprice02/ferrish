@@ -1,28 +1,10 @@
 # Ferrish Copilot Instructions
 
-This file provides project-specific guidance for the **ferrish** shell project. It supplements the account-level instructions found at `$HOME/.copilot/`.
+Project-specific guidance for **ferrish**, a modern Rust-powered shell focused on safety, performance, and clarity.
 
-## Using These Instructions
+## Core Principles
 
-**Account-level guidance** (reusable across all your projects):
-- Start here: `$HOME/.copilot/copilot-instructions.md` - Entry point
-- `$HOME/.copilot/copilot-instructions-general.md` - Cross-project standards
-- `$HOME/.copilot/copilot-instructions-rust.md` - Rust best practices
-- `$HOME/.copilot/copilot-instructions-python.md` - Python best practices
-
-**Project-specific guidance** (this directory):
-- `.github/copilot-instructions.md` - Project entry point (this file)
-- `.github/instructions/rust.instructions.md` - Ferrish-specific Rust guidance
-- `.github/instructions/testing.instructions.md` - Ferrish-specific testing patterns
-- `.github/instructions/shell.instructions.md` - Shell-specific development notes
-
----
-
-## Project Overview
-
-**ferrish** is a modern, Rust-powered shell focused on **safety, performance, and clarity**. It is not intended as a drop-in replacement for bash/zsh, but rather an experiment in better shell foundations built with modern principles.
-
-### Core Principles
+These principles guide all development decisions:
 
 1. **Safety by default** - Avoid footguns, undefined behavior, and surprising side effects
 2. **Explicit over implicit** - Favor clear, readable behavior instead of clever but opaque magic
@@ -30,11 +12,11 @@ This file provides project-specific guidance for the **ferrish** shell project. 
 4. **Composable, but understandable** - Pipelining and composition remain powerful without becoming unreadable
 5. **Fast enough, then correct** - Performance matters, but never at the cost of correctness
 
----
+**Design Philosophy**: When a trade-off exists between performance and correctness, correctness wins.
 
 ## Project Structure
 
-### Modules (file-based, not mod.rs)
+Modules use **file-based organization** (not mod.rs):
 - `src/lexer.rs` - Tokenization
 - `src/parser.rs` - AST construction
 - `src/evaluator.rs` - Execution
@@ -42,12 +24,16 @@ This file provides project-specific guidance for the **ferrish** shell project. 
 - `src/builtins.rs` - Built-in commands
 - `src/shell_io.rs` - I/O management
 
-See account-level `copilot-instructions-rust.md` for details on modern module organization.
+## Key Development Notes
 
----
+**Error Reporting**: Source span errors in lexer/parser are critical for user experience. Use **miette** to provide context and suggestions.
+
+**Testing**: Shell-bound tests are essential. Beyond unit and integration tests, spawn ferrish as a subprocess to verify actual behavior (I/O, pipes, semantics, signal handling).
+
+**REPL Responsiveness**: Lexing/parsing should complete in <100ms for typical commands. Users expect immediate feedback.
+
+**State Management**: Keep state (variables, functions, environment) centralized. Test variable scoping and isolation thoroughly.
 
 ## Reference
 
-- **Account-level instructions**: `$HOME/.copilot/copilot-instructions.md`
-- **Rust guidance**: `$HOME/.copilot/copilot-instructions-rust.md`
 - **Project README**: [README.md](../../README.md)
