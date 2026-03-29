@@ -17,6 +17,7 @@ These principles guide all development decisions:
 ## Project Structure
 
 Modules use **file-based organization** (not mod.rs):
+
 - `src/lexer.rs` - Tokenization
 - `src/parser.rs` - AST construction
 - `src/evaluator.rs` - Execution
@@ -36,4 +37,4 @@ Modules use **file-based organization** (not mod.rs):
 
 ## Reference
 
-- **Project README**: [README.md](../../README.md)
+- **Project README**: [README.md](../README.md)

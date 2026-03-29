@@ -147,3 +147,69 @@ impl ShellBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::MockIo;
+    use crate::Arg;
+
+    #[test]
+    fn test_shell_prefix() {
+        assert_eq!(Shell::prefix(), "\u{1F980}> ");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_shell_builder_with_custom_io() {
+        let io = MockIo::empty();
+        let shell = Shell::builder().with_io(io);
+        // Verify the shell was created and has the IO
+        let borrowed_io = shell.io();
+        assert_eq!(borrowed_io.output().len(), 0);
+    }
+
+    #[test]
+    fn test_shell_execute_command_echo() {
+        let io = MockIo::empty();
+        let mut shell = Shell::builder().with_io(io);
+        let command = Command::BuiltIn(
+            crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Echo,
+            ),
+        );
+        let args = vec![Arg::from("test"), Arg::from("message")];
+        let result = shell.execute_command(command, args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+        {
+            let io_ref = shell.io();
+            let output = io_ref.output();
+            assert_eq!(output, b"test message\n");
+        }
+    }
+
+    #[test]
+    fn test_shell_execute_command_exit() {
+        let io = MockIo::empty();
+        let mut shell = Shell::builder().with_io(io);
+        let command = Command::BuiltIn(
+            crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Exit,
+            ),
+        );
+        let result = shell.execute_command(command, vec![]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_shell_io_accessor() {
+        let io = MockIo::empty();
+        let shell = Shell::builder().with_io(io);
+        let borrowed = shell.io();
+        assert_eq!(borrowed.output().len(), 0);
+        assert_eq!(borrowed.error().len(), 0);
+    }
+}

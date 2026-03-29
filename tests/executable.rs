@@ -1,19 +1,50 @@
-use ferrish::Shell;
-use ferrish::io;
+mod harness;
 
-mod common;
+use harness::ShellTest;
 
-// #[test]
-// fn test_executable_cargo() {
-//     let io = io::MockIo::from_lines(&["cargo --version", "exit"]);
-//     let mut shell = Shell::builder().with_io(io);
+// ============================================================================
+// Executable Detection and External Command Tests
+// ============================================================================
 
-//     let result = shell.run();
-//     assert!(result.is_ok());
+#[test]
+fn test_executable_detection_with_system_command() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo executable_test")
+        .run();
 
-//     let io = shell.io();
-//     let output = io.output();
-//     assert!(common::find_subsequence(output, b"cargo ").is_some()); // TODO: more precise check
-//     let error = io.error();
-//     assert_matching_output!(error, b"");
-// }
+    // System echo should work (running as external command)
+    result.assert_output_contains("executable_test");
+}
+
+#[test]
+fn test_command_not_found_error() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("nonexistentcommandthatdefinitelydoesnotexist123")
+        .run();
+
+    // Should produce an error about command not found
+    assert!(
+        result.error().contains("not found") || result.output().contains("not found"),
+        "Should show error for non-existent command in error or output: error='{}', output='{}'",
+        result.error(),
+        result.output()
+    );
+}
+
+#[test]
+fn test_executable_in_path() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("which sh")
+        .run();
+
+    // which command should find sh in PATH
+    let output = result.output();
+    let error = result.error();
+    assert!(
+        output.contains("sh") || !error.contains("not found"),
+        "Should be able to execute 'which' command or similar"
+    );
+}

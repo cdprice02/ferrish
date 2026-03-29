@@ -1,33 +1,140 @@
-mod common;
+mod harness;
 
-use common::ShellTestSession;
+use harness::ShellTest;
+
+// ============================================================================
+// PWD Command Tests
+// ============================================================================
 
 #[test]
-fn test_cd_to_home_with_no_args() {
-    let shell = ShellTestSession::new();
+fn test_pwd_in_home_directory() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("pwd")
+        .run();
 
-    let subdir = shell.home_dir().join("subdir");
-    std::fs::create_dir(&subdir).expect("Failed to create subdir");
-
-    let result = shell.run(&["cd subdir", "pwd", "cd", "pwd"]);
-    eprintln!("Output:\n{}", result.output);
-    eprintln!("Error:\n{}", result.error);
+    // Should show the home directory path
+    assert!(!result.output_contains("error"), "pwd should not error in home dir");
 }
 
 #[test]
-fn test_cd_tilde() {}
+fn test_pwd_after_cd_to_subdirectory() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("mkdir subdir\ncd subdir\npwd")
+        .run();
+
+    // Output should contain "subdir" in the path
+    assert!(
+        result.output_contains("subdir"),
+        "pwd output should contain 'subdir' after cd"
+    );
+}
 
 #[test]
-fn test_cd_tilde_subdirectory() {}
+fn test_pwd_shows_correct_path() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("pwd\necho end")
+        .run();
+
+    // Should have some output before the "end" marker
+    let output = result.output();
+    assert!(output.contains("end"), "Should contain the end marker");
+    // Output should not be empty (pwd should print something)
+    assert!(output.len() > 10, "pwd should produce meaningful output");
+}
+
+// ============================================================================
+// Echo Command Tests
+// ============================================================================
 
 #[test]
-fn test_home_directory_isolation() {}
+fn test_echo_with_no_arguments() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo")
+        .run();
+
+    // echo with no args should output a blank line (just the prompt after)
+    // The output should show the command executed
+    assert!(!result.output_contains("error"), "echo should not error");
+}
 
 #[test]
-fn test_cd_to_temp_directory() {}
+fn test_echo_with_single_argument() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo hello")
+        .run();
+
+    result.assert_output_contains("hello");
+}
 
 #[test]
-fn test_cd_with_created_subdirectory() {}
+fn test_echo_with_multiple_arguments() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo hello world from ferrish")
+        .run();
+
+    result.assert_output_contains("hello");
+    result.assert_output_contains("world");
+    result.assert_output_contains("ferrish");
+}
+
+// ============================================================================
+// CD Command Error Tests
+// ============================================================================
 
 #[test]
-fn test_cd_with_relative_paths() {}
+fn test_cd_to_nonexistent_directory_shows_error() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("cd nonexistent")
+        .run();
+
+    result.assert_error_contains("no such file or directory");
+}
+
+#[test]
+fn test_cd_error_contains_appropriate_message() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("cd /this/path/definitely/does/not/exist/on/any/system")
+        .run();
+
+    let error = result.error();
+    assert!(
+        error.contains("cd:") || error.contains("no such file or directory"),
+        "Error message should mention cd command or file not found: {}",
+        error
+    );
+}
+
+// ============================================================================
+// Exit and Sequential Command Tests
+// ============================================================================
+
+#[test]
+fn test_exit_command_closes_shell() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo before\nexit")
+        .run();
+
+    // Should show the before message and exit cleanly
+    result.assert_output_contains("before");
+}
+
+#[test]
+fn test_multiple_sequential_commands_work() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo first\necho second\necho third")
+        .run();
+
+    result.assert_output_contains("first");
+    result.assert_output_contains("second");
+    result.assert_output_contains("third");
+}

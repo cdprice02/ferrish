@@ -12,3 +12,6 @@ target/
 *.swp
 *.swo
 *~
+
+# OS
+tmp/

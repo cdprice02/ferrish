@@ -99,3 +99,78 @@ impl ShellIo for MockIo {
         &mut self.error
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(unused_imports)]
+    use std::io::Write;
+
+    #[test]
+    fn test_mock_io_empty() {
+        let io = MockIo::empty();
+        assert_eq!(io.output().len(), 0);
+        assert_eq!(io.error().len(), 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mock_io_new_with_input() {
+        let input = b"hello\nworld\n".to_vec();
+        let io = MockIo::new(input.clone());
+        assert_eq!(io.output().len(), 0);
+    }
+
+    #[test]
+    fn test_mock_io_from_lines() {
+        let lines = &["echo hello", "echo world"];
+        let io = MockIo::from_lines(lines);
+        let input_bytes = io.reader.get_ref().get_ref();
+        let expected = b"echo hello\necho world\n";
+        assert_eq!(input_bytes, expected);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mock_io_from_single_line() {
+        let lines = &["echo test"];
+        let io = MockIo::from_lines(lines);
+        let input_bytes = io.reader.get_ref().get_ref();
+        assert_eq!(input_bytes, b"echo test\n");
+    }
+
+    #[test]
+    fn test_mock_io_read_line() {
+        let lines = &["hello", "world"];
+        let mut io = MockIo::from_lines(lines);
+        let mut buffer = Vec::new();
+        let bytes_read = io.read_line(&mut buffer).unwrap();
+        assert!(bytes_read > 0);
+        assert_eq!(buffer, b"hello\n");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mock_io_output_write() {
+        let mut io = MockIo::empty();
+        io.out_writer().write_all(b"test output").unwrap();
+        assert_eq!(io.output(), b"test output");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mock_io_error_write() {
+        let mut io = MockIo::empty();
+        io.err_writer().write_all(b"test error").unwrap();
+        assert_eq!(io.error(), b"test error");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mock_io_from_empty_lines() {
+        let lines: &[&str] = &[];
+        let io = MockIo::from_lines(lines);
+        let input_bytes = io.reader.get_ref().get_ref();
+        assert_eq!(input_bytes, b"");
+    }
+}

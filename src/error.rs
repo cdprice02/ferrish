@@ -73,3 +73,132 @@ impl ShellError {
         matches!(self, ShellError::SpawnFailed(_) | ShellError::WaitFailed(_))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_command_not_found() {
+        let err = ShellError::CommandNotFound;
+        assert_eq!(err.to_string(), "command not found");
+    }
+
+    #[test]
+    fn test_display_missing_operand() {
+        let err = ShellError::MissingOperand;
+        assert_eq!(err.to_string(), "missing operand");
+    }
+
+    #[test]
+    fn test_display_file_not_found() {
+        let err = ShellError::FileNotFound {
+            arg: Arg::from("/path/to/file"),
+        };
+        assert_eq!(err.to_string(), "no such file or directory: /path/to/file");
+    }
+
+    #[test]
+    fn test_display_is_a_directory() {
+        let err = ShellError::IsADirectory {
+            arg: Arg::from("/some/dir"),
+        };
+        assert_eq!(err.to_string(), "is a directory: /some/dir");
+    }
+
+    #[test]
+    fn test_display_not_a_directory() {
+        let err = ShellError::NotADirectory {
+            arg: Arg::from("/some/file"),
+        };
+        assert_eq!(err.to_string(), "not a directory: /some/file");
+    }
+
+    #[test]
+    fn test_is_fatal_spawn_failed() {
+        let err = ShellError::SpawnFailed(std::io::Error::last_os_error());
+        assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn test_is_fatal_wait_failed() {
+        let err = ShellError::WaitFailed(std::io::Error::last_os_error());
+        assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn test_is_fatal_command_not_found() {
+        let err = ShellError::CommandNotFound;
+        assert!(!err.is_fatal());
+    }
+
+    #[test]
+    fn test_is_fatal_file_not_found() {
+        let err = ShellError::FileNotFound {
+            arg: Arg::from("test"),
+        };
+        assert!(!err.is_fatal());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_equality_file_not_found() {
+        let err1 = ShellError::FileNotFound {
+            arg: Arg::from("file1"),
+        };
+        let err2 = ShellError::FileNotFound {
+            arg: Arg::from("file1"),
+        };
+        assert_eq!(err1, err2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_inequality_file_not_found() {
+        let err1 = ShellError::FileNotFound {
+            arg: Arg::from("file1"),
+        };
+        let err2 = ShellError::FileNotFound {
+            arg: Arg::from("file2"),
+        };
+        assert_ne!(err1, err2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_equality_different_variant() {
+        let err1 = ShellError::CommandNotFound;
+        let err2 = ShellError::MissingOperand;
+        assert_ne!(err1, err2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_equality_nonzero_exit() {
+        use std::process::Command as StdCommand;
+
+        let status1 = StdCommand::new("sh").arg("-c").arg("exit 42").status().unwrap();
+        let status2 = StdCommand::new("sh").arg("-c").arg("exit 42").status().unwrap();
+
+        let e1 = ShellError::NonZeroExit(status1);
+        let e2 = ShellError::NonZeroExit(status2);
+        assert_eq!(e1, e2);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_equality_spawn_wait_io() {
+        // Use synthetic OS error codes to compare raw_os_error equality
+        let s1 = ShellError::SpawnFailed(std::io::Error::from_raw_os_error(2));
+        let s2 = ShellError::SpawnFailed(std::io::Error::from_raw_os_error(2));
+        assert_eq!(s1, s2);
+
+        let w1 = ShellError::WaitFailed(std::io::Error::from_raw_os_error(3));
+        let w2 = ShellError::WaitFailed(std::io::Error::from_raw_os_error(3));
+        assert_eq!(w1, w2);
+
+        let i1 = ShellError::Io(std::io::Error::from_raw_os_error(4));
+        let i2 = ShellError::Io(std::io::Error::from_raw_os_error(4));
+        assert_eq!(i1, i2);
+    }
+}

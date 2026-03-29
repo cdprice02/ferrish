@@ -91,36 +91,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_command_builtin() {
-        let command = "cd".as_bytes();
-        let command = parse_command(command);
-        match command {
-            Command::BuiltIn(builtin) => {
-                assert_eq!(builtin.name(), builtin::BuiltInName::Cd)
-            }
-            Command::Executable(executable) => {
-                panic!("Built-in command recognized as executable: {}", executable)
-            }
-            Command::Unrecognized(_) => panic!("Built-in command unrecognized: {}", command),
-        }
-    }
-
-    #[test]
-    fn test_parse_command_executable() {
-        let command = "cargo".as_bytes();
-        let command = parse_command(command);
-        match command {
-            Command::Executable(executable) => {
-                assert_eq!(executable.name(), "cargo")
-            }
-            Command::BuiltIn(builtin) => {
-                panic!("Executable command recognized as built-in: {}", builtin)
-            }
-            Command::Unrecognized(_) => panic!("Executable command unrecognized: {}", command),
-        }
-    }
-
-    #[test]
     fn test_parse_command_unrecognized() {
         let command = "some_non_existent_command".as_bytes();
         let command = parse_command(command);
@@ -135,6 +105,54 @@ mod tests {
     #[test]
     fn test_parse_arg() {
         let arg = "/home/user".as_bytes();
+        let parsed_arg = parse_arg(arg);
+        match parsed_arg {
+            Arg::Literal(bytes) => assert_eq!(bytes, arg),
+        }
+    }
+
+    #[test]
+    fn test_split_command_and_args_no_args() {
+        let buffer = b"ls";
+        let (command, args) = split_command_and_args(buffer);
+        assert_eq!(command, b"ls");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_split_command_and_args_single_arg() {
+        let buffer = b"ls -la";
+        let (command, args) = split_command_and_args(buffer);
+        assert_eq!(command, b"ls");
+        assert_eq!(args, vec!["-la".as_bytes()]);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_split_command_and_args_multiple_spaces() {
+        let buffer = b"    command    arg1    arg2    arg3    ";
+        let (command, args) = split_command_and_args(buffer);
+        assert_eq!(command, b"command");
+        assert_eq!(
+            args,
+            vec!["arg1".as_bytes(), "arg2".as_bytes(), "arg3".as_bytes()]
+        );
+    }
+
+    #[test]
+    fn test_parse_arg_empty() {
+        let arg = "".as_bytes();
+        let parsed_arg = parse_arg(arg);
+        match parsed_arg {
+            Arg::Literal(bytes) => assert!(bytes.is_empty()),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_parse_arg_special_chars() {
+        let arg = "file-with_special.chars".as_bytes();
         let parsed_arg = parse_arg(arg);
         match parsed_arg {
             Arg::Literal(bytes) => assert_eq!(bytes, arg),

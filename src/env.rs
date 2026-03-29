@@ -30,3 +30,33 @@ fn get_path_dirs() -> impl Iterator<Item = PathBuf> {
         .into_iter()
         .filter(|d| d.is_dir() && d.exists())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_current_dir_returns_valid_path() {
+        let result = current_dir();
+        assert!(result.is_ok());
+        let cwd = result.unwrap();
+        assert!(cwd.is_absolute());
+    }
+
+    #[test]
+    fn test_get_path_dirs_filters_existing_directories() {
+        let dirs: Vec<_> = get_path_dirs().collect();
+        // Verify all returned paths exist and are directories
+        for dir in dirs {
+            assert!(dir.exists(), "path {} should exist", dir.display());
+            assert!(dir.is_dir(), "path {} should be a directory", dir.display());
+        }
+    }
+
+    #[test]
+    fn test_home_dir_returns_valid_path_or_none() {
+        if let Some(home) = home_dir() {
+            assert!(home.is_absolute());
+        }
+    }
+}

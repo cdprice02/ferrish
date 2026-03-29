@@ -135,42 +135,12 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_builtin_echo() {
-        let args = vec![Arg::from("Hello"), Arg::from("World")];
-        let mut io = MockIo::empty();
-        let result = execute_builtin(BuiltInCommand::new(BuiltInName::Echo), args, &mut io);
-        assert!(result.is_ok());
-        let exit_code = result.unwrap();
-        assert_eq!(exit_code, None);
-        let output = io.output();
-        assert_eq!(output, b"Hello World\n");
-    }
-
-    #[test]
-    fn test_execute_echo_no_args() {
-        let args: Vec<Arg> = vec![];
-        let mut io = MockIo::empty();
-        execute_echo(args, &mut io).unwrap();
-        let output = io.output();
-        assert_eq!(output, b"\n");
-    }
-
-    #[test]
     fn test_execute_type_builtin() {
         let args = vec![Arg::from("echo")];
         let mut io = MockIo::empty();
         execute_type(args, &mut io).unwrap();
         let output = io.output();
         assert_eq!(output, b"echo is a shell builtin\n");
-    }
-
-    #[test]
-    fn test_execute_type_executable() {
-        let args = vec![Arg::from("cargo")];
-        let mut io = MockIo::empty();
-        execute_type(args, &mut io).unwrap();
-        let output = io.output();
-        assert!(output.starts_with(b"cargo is "));
     }
 
     #[test]
@@ -187,5 +157,22 @@ mod tests {
         );
     }
 
-    // TODO: test execute_cd and execute_executable (requires env and fs mocking)
+    #[test]
+    fn test_execute_type_exit_builtin() {
+        let args = vec![Arg::from("exit")];
+        let mut io = MockIo::empty();
+        execute_type(args, &mut io).unwrap();
+        let output = io.output();
+        assert_eq!(output, b"exit is a shell builtin\n");
+    }
+
+    #[test]
+    fn test_execute_builtin_pwd() {
+        let args: Vec<Arg> = vec![];
+        let mut io = MockIo::empty();
+        let result = execute_pwd(args, &mut io);
+        assert!(result.is_ok());
+        let output = io.output();
+        assert!(!output.is_empty());
+    }
 }

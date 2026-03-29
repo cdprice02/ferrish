@@ -40,3 +40,42 @@ impl From<ExitCode> for i32 {
         val.as_i32()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_code_constants() {
+        assert_eq!(ExitCode::SUCCESS.0, 0);
+        assert_eq!(ExitCode::FAILURE.0, 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_exit_code_from_u8() {
+        assert_eq!(ExitCode::from(0u8).0, 0);
+        assert_eq!(ExitCode::from(42u8).0, 42);
+        assert_eq!(ExitCode::from(255u8).0, 255);
+    }
+
+    #[test]
+    fn test_exit_code_as_i32() {
+        assert_eq!(ExitCode(0).as_i32(), 0);
+        assert_eq!(ExitCode(1).as_i32(), 1);
+        assert_eq!(ExitCode(255).as_i32(), 255);
+    }
+
+    #[test]
+    fn test_exit_code_display() {
+        assert_eq!(ExitCode(0).to_string(), "0");
+        assert_eq!(ExitCode(42).to_string(), "42");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_exit_code_into_i32() {
+        let code: i32 = ExitCode(5).into();
+        assert_eq!(code, 5);
+    }
+}
