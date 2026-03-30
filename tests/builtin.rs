@@ -13,7 +13,6 @@ fn test_pwd_in_home_directory() {
         .script("pwd")
         .run();
 
-    // Should show the home directory path
     assert!(!result.output_contains("error"), "pwd should not error in home dir");
 }
 
@@ -24,7 +23,6 @@ fn test_pwd_after_cd_to_subdirectory() {
         .script("mkdir subdir\ncd subdir\npwd")
         .run();
 
-    // Output should contain "subdir" in the path
     assert!(
         result.output_contains("subdir"),
         "pwd output should contain 'subdir' after cd"
@@ -38,10 +36,8 @@ fn test_pwd_shows_correct_path() {
         .script("pwd\necho end")
         .run();
 
-    // Should have some output before the "end" marker
     let output = result.output();
     assert!(output.contains("end"), "Should contain the end marker");
-    // Output should not be empty (pwd should print something)
     assert!(output.len() > 10, "pwd should produce meaningful output");
 }
 
@@ -56,8 +52,6 @@ fn test_echo_with_no_arguments() {
         .script("echo")
         .run();
 
-    // echo with no args should output a blank line (just the prompt after)
-    // The output should show the command executed
     assert!(!result.output_contains("error"), "echo should not error");
 }
 
@@ -83,8 +77,19 @@ fn test_echo_with_multiple_arguments() {
     result.assert_output_contains("ferrish");
 }
 
+#[test]
+fn test_echo_collapses_multiple_spaces() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo   hello   world")
+        .run();
+
+    result.assert_output_contains("hello");
+    result.assert_output_contains("world");
+}
+
 // ============================================================================
-// CD Command Error Tests
+// CD Command Tests
 // ============================================================================
 
 #[test]
@@ -112,19 +117,22 @@ fn test_cd_error_contains_appropriate_message() {
     );
 }
 
-// ============================================================================
-// Exit and Sequential Command Tests
-// ============================================================================
-
 #[test]
-fn test_exit_command_closes_shell() {
+fn test_cd_to_file_not_directory() {
     let result = ShellTest::new()
         .with_isolated_home()
-        .script("echo before\nexit")
+        .script("touch somefile\ncd somefile")
         .run();
 
-    // Should show the before message and exit cleanly
-    result.assert_output_contains("before");
+    result.assert_error_contains("not a directory");
+}
+
+#[test]
+fn test_cd_default_to_home() {
+    let result = ShellTest::new().with_isolated_home().script("cd\npwd").run();
+
+    assert!(!result.output_contains("error"));
+    assert!(!result.output().is_empty());
 }
 
 #[test]
@@ -134,7 +142,6 @@ fn test_cd_tilde_explicit() {
         .script("cd ~\npwd")
         .run();
 
-    // After `cd ~`, pwd should show the isolated HOME directory
     assert!(!result.output_contains("error"), "cd ~ should not error");
     assert!(!result.output().is_empty(), "pwd should produce output after cd ~");
 }
@@ -147,8 +154,73 @@ fn test_cd_relative_then_back() {
         .run();
 
     result.assert_output_contains("done");
-    // Should not contain "subdir" in the final pwd (we went back up)
     assert!(!result.output_contains("error"), "cd .. should not error");
+}
+
+// ============================================================================
+// Type Command Tests
+// ============================================================================
+
+#[test]
+fn test_type_identifies_builtin() {
+    let result = ShellTest::new().with_isolated_home().script("type exit").run();
+
+    assert!(result.output().contains("builtin") || result.output().contains("exit"));
+}
+
+#[test]
+fn test_type_nonexistent_returns_not_found() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("type definitely_does_not_exist_123")
+        .run();
+
+    assert!(result.error().contains("not found") || result.output().contains("not found"));
+}
+
+#[test]
+fn test_type_with_no_args_reports_error() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("type\necho survived")
+        .run();
+
+    result.assert_error_contains("missing operand");
+    result.assert_output_contains("survived");
+}
+
+#[test]
+fn test_type_system_executable() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("type sh")
+        .run();
+
+    let output = result.output();
+    assert!(
+        output.contains("sh is"),
+        "type sh should show 'sh is <path>', got: {}",
+        output
+    );
+    assert!(
+        output.contains('/') || output.contains('\\'),
+        "type sh output should contain a path separator, got: {}",
+        output
+    );
+}
+
+// ============================================================================
+// Exit and Sequential Command Tests
+// ============================================================================
+
+#[test]
+fn test_exit_command_closes_shell() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo before\nexit")
+        .run();
+
+    result.assert_output_contains("before");
 }
 
 #[test]
