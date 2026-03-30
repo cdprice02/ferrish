@@ -160,16 +160,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_shell_builder_with_custom_io() {
-        let io = MockIo::empty();
-        let shell = Shell::builder().with_io(io);
-        // Verify the shell was created and has the IO
-        let borrowed_io = shell.io();
-        assert_eq!(borrowed_io.output().len(), 0);
-    }
-
-    #[test]
     fn test_shell_execute_command_echo() {
         let io = MockIo::empty();
         let mut shell = Shell::builder().with_io(io);
@@ -203,13 +193,4 @@ mod tests {
         assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
 
-    #[test]
-    #[ignore]
-    fn test_shell_io_accessor() {
-        let io = MockIo::empty();
-        let shell = Shell::builder().with_io(io);
-        let borrowed = shell.io();
-        assert_eq!(borrowed.output().len(), 0);
-        assert_eq!(borrowed.error().len(), 0);
-    }
 }

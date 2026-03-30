@@ -150,7 +150,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_mock_io_output_write() {
         let mut io = MockIo::empty();
         io.out_writer().write_all(b"test output").unwrap();
@@ -158,7 +157,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_mock_io_error_write() {
         let mut io = MockIo::empty();
         io.err_writer().write_all(b"test error").unwrap();

@@ -141,7 +141,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_equality_file_not_found() {
         let err1 = ShellError::FileNotFound {
             arg: Arg::from("file1"),
@@ -153,7 +152,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_inequality_file_not_found() {
         let err1 = ShellError::FileNotFound {
             arg: Arg::from("file1"),
@@ -165,7 +163,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_equality_different_variant() {
         let err1 = ShellError::CommandNotFound;
         let err2 = ShellError::MissingOperand;
@@ -173,7 +170,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_equality_nonzero_exit() {
         use std::process::Command as StdCommand;
 
@@ -186,7 +182,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_equality_spawn_wait_io() {
         // Use synthetic OS error codes to compare raw_os_error equality
         let s1 = ShellError::SpawnFailed(std::io::Error::from_raw_os_error(2));

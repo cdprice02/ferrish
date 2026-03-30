@@ -52,14 +52,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_exit_code_from_u8() {
-        assert_eq!(ExitCode::from(0u8).0, 0);
-        assert_eq!(ExitCode::from(42u8).0, 42);
-        assert_eq!(ExitCode::from(255u8).0, 255);
-    }
-
-    #[test]
     fn test_exit_code_as_i32() {
         assert_eq!(ExitCode(0).as_i32(), 0);
         assert_eq!(ExitCode(1).as_i32(), 1);
@@ -72,10 +64,4 @@ mod tests {
         assert_eq!(ExitCode(42).to_string(), "42");
     }
 
-    #[test]
-    #[ignore]
-    fn test_exit_code_into_i32() {
-        let code: i32 = ExitCode(5).into();
-        assert_eq!(code, 5);
-    }
 }

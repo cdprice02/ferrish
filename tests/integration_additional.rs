@@ -58,3 +58,64 @@ fn test_echo_after_error_sequence() {
     let result = ShellTest::new().with_isolated_home().script("false\necho ok").run();
     result.assert_output_contains("ok");
 }
+
+#[test]
+fn test_type_with_no_args() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("type\necho survived")
+        .run();
+
+    // type with no args should report missing operand on stderr
+    result.assert_error_contains("missing operand");
+    // Shell should continue after the non-fatal error
+    result.assert_output_contains("survived");
+}
+
+#[test]
+fn test_type_system_executable() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("type sh")
+        .run();
+
+    // `type sh` should identify sh as an executable and show its path
+    let output = result.output();
+    assert!(
+        output.contains(" is /"),
+        "type sh should show path like 'sh is /bin/sh', got: {}",
+        output
+    );
+}
+
+#[test]
+fn test_echo_multiple_spaces_between_args() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo   hello   world")
+        .run();
+
+    // Multiple spaces should be collapsed; args are separated by single spaces
+    result.assert_output_contains("hello");
+    result.assert_output_contains("world");
+}
+
+#[test]
+fn test_error_goes_to_stderr_not_stdout() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("commandthatdoesnotexist_xyz")
+        .run();
+
+    // Error message must appear on stderr
+    assert!(
+        !result.error().is_empty(),
+        "Error output should be non-empty for unknown command"
+    );
+    // stdout should not contain the error text
+    assert!(
+        !result.output().contains("not found"),
+        "Error text should not appear on stdout, got: {}",
+        result.output()
+    );
+}

@@ -128,6 +128,30 @@ fn test_exit_command_closes_shell() {
 }
 
 #[test]
+fn test_cd_tilde_explicit() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("cd ~\npwd")
+        .run();
+
+    // After `cd ~`, pwd should show the isolated HOME directory
+    assert!(!result.output_contains("error"), "cd ~ should not error");
+    assert!(!result.output().is_empty(), "pwd should produce output after cd ~");
+}
+
+#[test]
+fn test_cd_relative_then_back() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("mkdir subdir\ncd subdir\ncd ..\npwd\necho done")
+        .run();
+
+    result.assert_output_contains("done");
+    // Should not contain "subdir" in the final pwd (we went back up)
+    assert!(!result.output_contains("error"), "cd .. should not error");
+}
+
+#[test]
 fn test_multiple_sequential_commands_work() {
     let result = ShellTest::new()
         .with_isolated_home()

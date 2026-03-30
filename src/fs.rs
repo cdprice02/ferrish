@@ -50,7 +50,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_resolve_path_relative_dots_parent() {
         let current_dir = env::current_dir().unwrap();
         let path = PathBuf::from("tmp123/inner/../");
@@ -76,7 +75,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_resolve_path_tilde_slash() {
         let home_dir = env::home_dir();
         if home_dir.is_none() {
@@ -101,7 +99,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_resolve_path_nested_relative() {
         let current_dir = env::current_dir().unwrap();
         let path = PathBuf::from("./subdir/nested/file");

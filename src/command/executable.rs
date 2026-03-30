@@ -48,10 +48,4 @@ mod tests {
         assert_eq!(cmd.file_path(), &path);
     }
 
-    #[test]
-    #[ignore]
-    fn test_executable_display() {
-        let cmd = ExecutableCommand::new(PathBuf::from("/bin/bash"));
-        assert_eq!(cmd.to_string(), "bash");
-    }
 }

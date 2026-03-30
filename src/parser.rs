@@ -120,7 +120,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_split_command_and_args_single_arg() {
         let buffer = b"ls -la";
         let (command, args) = split_command_and_args(buffer);
@@ -129,7 +128,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_split_command_and_args_multiple_spaces() {
         let buffer = b"    command    arg1    arg2    arg3    ";
         let (command, args) = split_command_and_args(buffer);
