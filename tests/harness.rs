@@ -1,10 +1,16 @@
-//! Lean custom test harness for ferrish shell integration tests
+//! Integration test harness — runs commands through the ferrish library directly
+//! using MockIo, so tarpaulin captures coverage from all integration tests.
 
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 
-/// Lightweight builder for configuring and running shell tests
+use ferrish::io::MockIo;
+use ferrish::Shell;
+
+/// Serializes tests that touch global process state (CWD, HOME).
+/// All integration tests go through this to avoid races between parallel test threads.
+static PROCESS_MUTEX: Mutex<()> = Mutex::new(());
+
 pub struct ShellTest {
     home_dir: Option<PathBuf>,
     temp_dir: Option<tempfile::TempDir>,
@@ -18,7 +24,6 @@ impl Default for ShellTest {
 }
 
 impl ShellTest {
-    /// Create a new shell test builder
     pub fn new() -> Self {
         Self {
             home_dir: None,
@@ -27,14 +32,11 @@ impl ShellTest {
         }
     }
 
-    /// Set script mode with commands to run
     pub fn script(mut self, commands: &str) -> Self {
         self.script = Some(commands.to_string());
         self
     }
 
-    /// Create an isolated HOME directory
-    #[allow(dead_code)]
     pub fn with_isolated_home(mut self) -> Self {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let home = temp_dir.path().to_path_buf();
@@ -43,86 +45,91 @@ impl ShellTest {
         self
     }
 
-    /// Run the shell test and return the result
     pub fn run(self) -> TestResult {
-        let bin_path = env!("CARGO_BIN_EXE_ferrish");
+        // Serialize all tests — CWD and HOME are process-global state.
+        let _guard = PROCESS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
-        let mut cmd = Command::new(bin_path);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let original_cwd = std::env::current_dir().ok();
+        let original_home = std::env::var("HOME").ok();
+        let original_userprofile = std::env::var("USERPROFILE").ok();
 
         if let Some(home) = &self.home_dir {
-            cmd.env("HOME", home);
-            cmd.env("USERPROFILE", home);
+            // SAFETY: this function holds PROCESS_MUTEX, serializing all
+            // env-var mutations across test threads.
+            unsafe {
+                std::env::set_var("HOME", home);
+                std::env::set_var("USERPROFILE", home);
+            }
+            let _ = std::env::set_current_dir(home);
         }
 
-        let mut child = cmd.spawn().expect("Failed to spawn shell");
+        // Build MockIo input from the script lines, appending "exit" so Shell::run()
+        // terminates cleanly instead of looping on EOF.
+        let mut lines: Vec<String> = self
+            .script
+            .as_deref()
+            .unwrap_or("")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.push("exit".to_string());
 
-        let script = self.script.unwrap_or_default();
-        run_script_mode(&mut child, &script)
+        let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let io = MockIo::from_lines(&line_refs);
+        let mut shell = Shell::builder().with_io(io);
+        let _ = shell.run();
+
+        let output = String::from_utf8_lossy(shell.io().output()).to_string();
+        let error = String::from_utf8_lossy(shell.io().error()).to_string();
+
+        // Restore process state before self.temp_dir is dropped.
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(&cwd);
+        }
+        // SAFETY: PROCESS_MUTEX is held for the duration of this function.
+        unsafe {
+            restore_env("HOME", original_home);
+            restore_env("USERPROFILE", original_userprofile);
+        }
+
+        TestResult { output, error }
+        // self drops here (temp_dir cleaned up), then _guard (mutex released)
     }
 }
 
-/// Run script mode: write all commands at once, read all output
-fn run_script_mode(child: &mut Child, script: &str) -> TestResult {
-    let mut input = script.to_string();
-    if !input.ends_with('\n') && !input.is_empty() {
-        input.push('\n');
-    }
-    input.push_str("exit\n");
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes());
-    }
-
-    let mut output = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_end(&mut output);
-    }
-
-    let mut error = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut error);
-    }
-
-    let exit_code = child.wait().ok().and_then(|status| status.code());
-
-    TestResult {
-        output: String::from_utf8_lossy(&output).to_string(),
-        error: String::from_utf8_lossy(&error).to_string(),
-        exit_code,
+/// # Safety
+/// Callers must hold `PROCESS_MUTEX` to serialize env-var mutations.
+unsafe fn restore_env(key: &str, original: Option<String>) {
+    // SAFETY: caller holds PROCESS_MUTEX.
+    unsafe {
+        match original {
+            Some(val) => std::env::set_var(key, val),
+            None => std::env::remove_var(key),
+        }
     }
 }
 
-/// Result of running a shell test
 pub struct TestResult {
     output: String,
     #[allow(dead_code)]
     error: String,
-    #[allow(dead_code)]
-    exit_code: Option<i32>,
 }
 
 impl TestResult {
-    /// Get the standard output
     pub fn output(&self) -> &str {
         &self.output
     }
 
-    /// Get the standard error
     #[allow(dead_code)]
     pub fn error(&self) -> &str {
         &self.error
     }
 
-    /// Check if output contains a string (non-panicking)
     #[allow(dead_code)]
     pub fn output_contains(&self, s: &str) -> bool {
         self.output.contains(s)
     }
 
-    /// Assert that output contains a string
     #[allow(dead_code)]
     pub fn assert_output_contains(&self, s: &str) {
         assert!(
@@ -133,7 +140,6 @@ impl TestResult {
         );
     }
 
-    /// Assert that error contains a string
     #[allow(dead_code)]
     pub fn assert_error_contains(&self, s: &str) {
         assert!(
