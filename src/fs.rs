@@ -26,17 +26,12 @@ mod tests {
 
     #[test]
     fn test_resolve_path_absolute() {
-        let path = PathBuf::from("/usr/bin");
-        let resolved = resolve_path(&path);
+        let current_dir = env::current_dir().unwrap();
+        let resolved = resolve_path(&current_dir);
         assert!(resolved.is_ok(), "Failed to resolve absolute path");
         let resolved = resolved.unwrap();
-        if cfg!(target_os = "windows") {
-            // On Windows, canonicalizing /usr/bin may lead to different results
-            // depending on the environment. So we just check that it ends with usr\bin
-            assert!(resolved.ends_with("usr\\bin") || resolved.ends_with("usr/bin"));
-        } else {
-            assert_eq!(resolved, PathBuf::from("/usr/bin"));
-        }
+        let canonical = canonicalize_path(current_dir).unwrap();
+        assert_eq!(resolved, canonical);
     }
 
     #[test]

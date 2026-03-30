@@ -148,7 +148,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_parse_arg_special_chars() {
         let arg = "file-with_special.chars".as_bytes();
         let parsed_arg = parse_arg(arg);

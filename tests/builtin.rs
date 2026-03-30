@@ -17,6 +17,7 @@ fn test_pwd_in_home_directory() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_pwd_after_cd_to_subdirectory() {
     let result = ShellTest::new()
         .with_isolated_home()
@@ -119,9 +120,15 @@ fn test_cd_error_contains_appropriate_message() {
 
 #[test]
 fn test_cd_to_file_not_directory() {
+    // Create the file via Rust so this test is portable (no `touch` on Windows).
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::File::create(temp.path().join("somefile")).unwrap();
+    let somefile = temp.path().join("somefile");
+    let script = format!("cd {}", somefile.display());
+
     let result = ShellTest::new()
         .with_isolated_home()
-        .script("touch somefile\ncd somefile")
+        .script(&script)
         .run();
 
     result.assert_error_contains("not a directory");
@@ -147,6 +154,7 @@ fn test_cd_tilde_explicit() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_cd_relative_then_back() {
     let result = ShellTest::new()
         .with_isolated_home()

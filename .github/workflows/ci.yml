@@ -66,4 +66,9 @@ jobs:
       - name: run coverage
         env:
           COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
-        run: cargo tarpaulin --verbose --all-features --workspace --timeout 180 --coveralls $COVERALLS_REPO_TOKEN --fail-under 80
+        run: |
+          if [ -n "$COVERALLS_REPO_TOKEN" ]; then
+            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --coveralls "$COVERALLS_REPO_TOKEN" --fail-under 80
+          else
+            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --fail-under 80
+          fi

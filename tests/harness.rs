@@ -7,8 +7,10 @@ use std::sync::Mutex;
 use ferrish::io::MockIo;
 use ferrish::Shell;
 
-/// Serializes tests that touch global process state (CWD, HOME).
-/// All integration tests go through this to avoid races between parallel test threads.
+/// Serializes tests that touch global process state (CWD, HOME) within this test binary.
+/// Note: each `tests/*.rs` file compiles to a separate binary; `cargo test` may run
+/// these binaries in parallel. If races across binaries are observed, run with
+/// `cargo test -j 1` or restructure tests to avoid mutating process-global state.
 static PROCESS_MUTEX: Mutex<()> = Mutex::new(());
 
 pub struct ShellTest {

@@ -131,7 +131,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_mock_io_from_single_line() {
         let lines = &["echo test"];
         let io = MockIo::from_lines(lines);
@@ -164,7 +163,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_mock_io_from_empty_lines() {
         let lines: &[&str] = &[];
         let io = MockIo::from_lines(lines);

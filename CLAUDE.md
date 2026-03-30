@@ -43,9 +43,9 @@ Input flows through: **Shell** → **Parser** → **Executor** → **BuiltIn | E
 Two layers:
 
 1. **Unit tests** — embedded in each module via `#[cfg(test)]`, use `MockIo` for I/O
-2. **Integration tests** (`tests/`) — spawn the compiled `ferrish` binary as a subprocess via the `ShellTest` harness in `tests/harness.rs`
+2. **Integration tests** (`tests/`) — exercise the `ferrish::Shell` library via the `ShellTest` harness in `tests/harness.rs`, using `MockIo` for I/O
 
-The `ShellTest` builder in `harness.rs` is the primary integration test interface. It creates an isolated `HOME` via `tempfile` and captures stdout/stderr. Prefer integration tests for anything user-visible.
+The `ShellTest` builder in `harness.rs` is the primary integration test interface. It runs the shell in-process, creates an isolated `HOME` via `tempfile`, and captures stdout/stderr. Prefer integration tests for anything user-visible.
 
 ## Key Conventions
 

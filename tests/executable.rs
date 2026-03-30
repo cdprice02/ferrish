@@ -35,16 +35,20 @@ fn test_command_not_found_error() {
 
 #[test]
 fn test_executable_in_path() {
+    #[cfg(unix)]
+    let script = "which sh";
+    #[cfg(windows)]
+    let script = "where cmd";
+
     let result = ShellTest::new()
         .with_isolated_home()
-        .script("which sh")
+        .script(script)
         .run();
 
-    // which command should find sh in PATH
     let output = result.output();
     let error = result.error();
     assert!(
-        output.contains("sh") || !error.contains("not found"),
-        "Should be able to execute 'which' command or similar"
+        !output.is_empty() || !error.contains("not found"),
+        "Should be able to execute a platform-appropriate executable lookup command"
     );
 }

@@ -171,14 +171,24 @@ mod tests {
 
     #[test]
     fn test_equality_nonzero_exit() {
-        use std::process::Command as StdCommand;
-
-        let status1 = StdCommand::new("sh").arg("-c").arg("exit 42").status().unwrap();
-        let status2 = StdCommand::new("sh").arg("-c").arg("exit 42").status().unwrap();
-
-        let e1 = ShellError::NonZeroExit(status1);
-        let e2 = ShellError::NonZeroExit(status2);
-        assert_eq!(e1, e2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            let status1 = ExitStatusExt::from_raw(42 << 8);
+            let status2 = ExitStatusExt::from_raw(42 << 8);
+            let e1 = ShellError::NonZeroExit(status1);
+            let e2 = ShellError::NonZeroExit(status2);
+            assert_eq!(e1, e2);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            let status1 = ExitStatusExt::from_raw(42);
+            let status2 = ExitStatusExt::from_raw(42);
+            let e1 = ShellError::NonZeroExit(status1);
+            let e2 = ShellError::NonZeroExit(status2);
+            assert_eq!(e1, e2);
+        }
     }
 
     #[test]

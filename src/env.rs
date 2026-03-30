@@ -1,7 +1,26 @@
 use std::{env, fs, io, path::PathBuf};
 
 pub fn home_dir() -> Option<PathBuf> {
-    env::home_dir()
+    #[cfg(unix)]
+    {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE")
+            .or_else(|| {
+                let drive = env::var_os("HOMEDRIVE")?;
+                let path_suffix = env::var_os("HOMEPATH")?;
+                let mut buf = PathBuf::from(drive);
+                buf.push(path_suffix);
+                Some(buf.into_os_string())
+            })
+            .map(PathBuf::from)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 pub fn current_dir() -> Result<PathBuf, io::Error> {

@@ -45,6 +45,7 @@ fn test_repl_sequential_commands() {
 
 /// Non-zero exit from an external command reports an error
 #[test]
+#[cfg(unix)]
 fn test_nonzero_exit_reports_error() {
     let result = ShellTest::new().with_isolated_home().script("false").run();
 
@@ -59,6 +60,7 @@ fn test_nonzero_exit_reports_error() {
 
 /// Shell continues running after a non-fatal error
 #[test]
+#[cfg(unix)]
 fn test_nonfatal_error_then_continue() {
     let result = ShellTest::new()
         .with_isolated_home()
