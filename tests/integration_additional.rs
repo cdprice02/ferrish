@@ -82,8 +82,14 @@ fn test_type_system_executable() {
     // `type sh` should identify sh as an executable and show its path
     let output = result.output();
     assert!(
-        output.contains(" is /"),
-        "type sh should show path like 'sh is /bin/sh', got: {}",
+        output.contains("sh is"),
+        "type sh should show 'sh is <path>', got: {}",
+        output
+    );
+    // Path should contain a separator (/ on Unix, \ on Windows)
+    assert!(
+        output.contains('/') || output.contains('\\'),
+        "type sh output should contain a path separator, got: {}",
         output
     );
 }
