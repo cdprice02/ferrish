@@ -1,8 +1,10 @@
-use std::{cell::RefCell, io};
+use std::cell::RefCell;
+use std::path::PathBuf;
 
 use crate::{
     Command,
     arg::Args,
+    ctx::ShellCtx,
     error::ShellResult,
     executor,
     exit::ExitCode,
@@ -10,25 +12,31 @@ use crate::{
     parser,
 };
 
-pub struct Shell<IO> {
+pub struct Shell<IO: ShellIo> {
     io: RefCell<IO>,
+    ctx: ShellCtx,
 }
 
-pub type StandardShell =
-    Shell<StandardIo<io::StdinLock<'static>, io::StdoutLock<'static>, io::StderrLock<'static>>>;
+pub type StandardShell = Shell<StandardIo>;
 
-impl Shell<()> {
+/// Non-generic entry points: `prefix()` and `builder()` don't depend on the IO type,
+/// so they live on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
+impl Shell<StandardIo> {
+    pub const fn prefix() -> &'static str {
+        "\u{1F980}> " // 🦀>
+    }
+
     /// Create a shell builder
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
     ///     .with_std_io();
     /// ```
     pub fn builder() -> ShellBuilder {
-        ShellBuilder
+        ShellBuilder::default()
     }
 }
 
@@ -43,8 +51,12 @@ impl<IO: ShellIo> Shell<IO> {
 
     pub fn run(&mut self) -> anyhow::Result<()> {
         loop {
-            self.io.borrow_mut().write_out(b"\xF0\x9F\xA6\x80> ")?; // 🦀>
-            self.io.borrow_mut().flush()?;
+            {
+                let mut io = self.io.borrow_mut();
+                let w = io.out_writer();
+                w.write_all(Shell::<StandardIo>::prefix().as_bytes())?;
+                w.flush()?;
+            }
 
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
@@ -59,19 +71,15 @@ impl<IO: ShellIo> Shell<IO> {
 
             let (command, args) = parser::parse(buffer);
             match self.execute_command(command.clone(), args) {
-                Ok(Some(exit_code)) => {
-                    // TODO: set exit code in caller env instead of printing
-                    self.io
-                        .borrow_mut()
-                        .write_out(format!("Exiting with code {}\n", exit_code).as_bytes())?;
+                Ok(Some(_exit_code)) => {
+                    // TODO: set exit code in caller env
                     break;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let e = anyhow::Error::new(e).context(command);
-                    let err_msg = format!("{:#}\n", e);
-                    self.io.borrow_mut().write_err(err_msg.as_bytes())?;
+                    writeln!(self.io.borrow_mut().err_writer(), "{:#}", e)?;
 
                     if fatal {
                         return Err(e);
@@ -108,56 +116,57 @@ impl<IO: ShellIo> Shell<IO> {
         command: Command,
         args: Args,
     ) -> ShellResult<Option<ExitCode>> {
-        // Adapters to convert ShellIo trait to std::io::Write
-        struct OutWriter<'a, IO: ShellIo> {
-            io: &'a RefCell<IO>,
-        }
-
-        impl<IO: ShellIo> std::io::Write for OutWriter<'_, IO> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.io.borrow_mut().write_out(buf)?;
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.io.borrow_mut().flush()
-            }
-        }
-
-        let mut out_writer = OutWriter { io: &self.io };
-
-        executor::execute(command, args, &mut out_writer)
+        executor::execute(command, args, &mut *self.io.borrow_mut(), &mut self.ctx)
     }
 }
 
-pub struct ShellBuilder;
+#[derive(Default)]
+pub struct ShellBuilder {
+    home_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+}
 
 impl ShellBuilder {
+    /// Set an explicit home directory (overrides env HOME / USERPROFILE)
+    pub fn with_home_dir(mut self, path: PathBuf) -> Self {
+        self.home_dir = Some(path);
+        self
+    }
+
+    /// Set an explicit initial working directory (overrides process CWD)
+    pub fn with_cwd(mut self, path: PathBuf) -> Self {
+        self.cwd = Some(path);
+        self
+    }
+
+    fn build_ctx(self) -> ShellCtx {
+        let base = ShellCtx::from_env();
+        ShellCtx::new(
+            self.home_dir.or(base.home_dir),
+            self.cwd.unwrap_or(base.cwd),
+        )
+    }
+
     /// Configure the shell with standard I/O (stdin/stdout/stderr)
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     ///
     /// let mut shell = Shell::builder()
-    ///     .with_std_io()
+    ///     .with_std_io();
     /// ```
-    pub fn with_std_io(
-        self,
-    ) -> Shell<StandardIo<io::BufReader<io::Stdin>, io::Stdout, io::Stderr>> {
-        let stdin = io::BufReader::new(io::stdin());
-        let stdout = io::stdout();
-        let stderr = io::stderr();
-
+    pub fn with_std_io(self) -> Shell<StandardIo> {
         Shell {
-            io: RefCell::new(StandardIo::new(stdin, stdout, stderr)),
+            io: RefCell::new(StandardIo::default()),
+            ctx: self.build_ctx(),
         }
     }
 
     /// Configure the shell with custom I/O
     ///
     /// # Example
-    /// ```no_run
+    /// ```
     /// use ferrish::Shell;
     /// use ferrish::io::MockIo;
     ///
@@ -168,6 +177,53 @@ impl ShellBuilder {
     pub fn with_io<IO: ShellIo>(self, io: IO) -> Shell<IO> {
         Shell {
             io: RefCell::new(io),
+            ctx: self.build_ctx(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::MockIo;
+    use crate::Arg;
+
+    #[test]
+    fn test_shell_prefix() {
+        assert_eq!(Shell::prefix(), "\u{1F980}> ");
+    }
+
+    #[test]
+    fn test_shell_execute_command_echo() {
+        let io = MockIo::empty();
+        let mut shell = Shell::builder().with_io(io);
+        let command = Command::BuiltIn(
+            crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Echo,
+            ),
+        );
+        let args = vec![Arg::from("test"), Arg::from("message")];
+        let result = shell.execute_command(command, args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+        {
+            let io_ref = shell.io();
+            let output = io_ref.output();
+            assert_eq!(output, b"test message\n");
+        }
+    }
+
+    #[test]
+    fn test_shell_execute_command_exit() {
+        let io = MockIo::empty();
+        let mut shell = Shell::builder().with_io(io);
+        let command = Command::BuiltIn(
+            crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Exit,
+            ),
+        );
+        let result = shell.execute_command(command, vec![]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
 }

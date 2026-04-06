@@ -27,3 +27,25 @@ impl ExecutableCommand {
             .unwrap_or("")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_executable_name_extracts_file_stem() {
+        let cmd = ExecutableCommand::new(PathBuf::from("/usr/bin/ls"));
+        assert_eq!(cmd.name(), "ls");
+
+        let cmd = ExecutableCommand::new(PathBuf::from("./cargo"));
+        assert_eq!(cmd.name(), "cargo");
+    }
+
+    #[test]
+    fn test_executable_file_path_getter() {
+        let path = PathBuf::from("/usr/local/bin/rustc");
+        let cmd = ExecutableCommand::new(path.clone());
+        assert_eq!(cmd.file_path(), &path);
+    }
+
+}

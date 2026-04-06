@@ -3,6 +3,7 @@ use std::fmt::Display;
 pub(crate) mod builtin;
 pub(crate) mod executable;
 
+/// Represents a shell command
 #[derive(Debug, Clone)]
 pub enum Command {
     BuiltIn(builtin::BuiltInCommand),
@@ -17,15 +18,5 @@ impl Display for Command {
             Command::Executable(executable) => write!(f, "{}", executable),
             Command::Unrecognized(bytes) => write!(f, "{}", String::from_utf8_lossy(bytes)),
         }
-    }
-}
-
-impl Command {
-    pub fn builtin(name: builtin::BuiltInName) -> Self {
-        Command::BuiltIn(builtin::BuiltInCommand::new(name))
-    }
-
-    pub fn unrecognized(name: Vec<u8>) -> Self {
-        Command::Unrecognized(name)
     }
 }
