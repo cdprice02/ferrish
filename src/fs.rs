@@ -93,7 +93,8 @@ mod tests {
 
     #[test]
     fn test_canonicalize_path_absolute() {
-        let path = PathBuf::from("/");
+        // Use current_dir() — guaranteed to exist on all platforms (no Unix-only "/" assumption).
+        let path = std::env::current_dir().unwrap();
         let result = canonicalize_path(path);
         assert!(result.is_ok());
     }

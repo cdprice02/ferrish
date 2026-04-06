@@ -11,9 +11,11 @@ pub fn home_dir() -> Option<PathBuf> {
             .or_else(|| {
                 let drive = env::var_os("HOMEDRIVE")?;
                 let path_suffix = env::var_os("HOMEPATH")?;
-                let mut buf = PathBuf::from(drive);
-                buf.push(path_suffix);
-                Some(buf.into_os_string())
+                // HOMEPATH is typically rooted (e.g. \Users\user), so PathBuf::push
+                // would replace the drive component. Concatenate via OsString instead.
+                let mut home = std::ffi::OsString::from(drive);
+                home.push(path_suffix);
+                Some(home)
             })
             .map(PathBuf::from)
     }

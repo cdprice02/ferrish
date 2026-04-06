@@ -194,21 +194,24 @@ fn test_type_with_no_args_reports_error() {
 
 #[test]
 fn test_type_system_executable() {
+    #[cfg(unix)]
+    let (script, expected_name) = ("type sh", "sh");
+    #[cfg(windows)]
+    let (script, expected_name) = ("type cmd", "cmd");
+
     let result = ShellTest::new()
         .with_isolated_home()
-        .script("type sh")
+        .script(script)
         .run();
 
     let output = result.output();
     assert!(
-        output.contains("sh is"),
-        "type sh should show 'sh is <path>', got: {}",
-        output
+        output.contains(&format!("{expected_name} is")),
+        "type {expected_name} should show '{expected_name} is <path>', got: {output}"
     );
     assert!(
         output.contains('/') || output.contains('\\'),
-        "type sh output should contain a path separator, got: {}",
-        output
+        "type {expected_name} output should contain a path separator, got: {output}"
     );
 }
 

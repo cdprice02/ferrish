@@ -13,18 +13,20 @@ fn test_home_isolation() {
         .script("pwd")
         .run();
 
-    let output = result.output();
-    // The pwd output should be present and not empty
-    // (the test harness creates an isolated temp directory)
-    assert!(
-        output.len() > 5,
-        "pwd should produce output in isolated home environment"
-    );
-    // Verify output contains either the temp path or current directory info
-    assert!(
-        output.contains("/tmp") || output.contains("ferrish") || output.len() > 10,
-        "Output should contain directory path: {}",
-        output
+    // pwd should output the isolated home (which is also the shell's initial CWD).
+    // The shell prompt is written to out_writer on the same line, so strip it first.
+    let home = result.home_dir().expect("isolated home was set");
+    let prompt = "🦀> ";
+    let pwd_output = result
+        .output()
+        .lines()
+        .find_map(|line| line.strip_prefix(prompt).map(str::trim))
+        .unwrap_or("");
+    assert_eq!(
+        pwd_output,
+        home.to_str().expect("home is valid UTF-8"),
+        "pwd should print the isolated temp home, full output: {}",
+        result.output()
     );
 }
 

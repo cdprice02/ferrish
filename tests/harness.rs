@@ -96,12 +96,16 @@ impl ShellTest {
             builder = builder.with_home_dir(h.clone()).with_cwd(h);
         }
         let mut shell = builder.with_io(io);
-        let _ = shell.run();
+        let run_result = shell.run();
 
         let output = String::from_utf8_lossy(shell.io().output()).to_string();
         let error = String::from_utf8_lossy(shell.io().error()).to_string();
 
-        TestResult { output, error }
+        run_result.unwrap_or_else(|err| {
+            panic!("shell.run() failed: {err}\nstdout:\n{output}\nstderr:\n{error}");
+        });
+
+        TestResult { output, error, home_dir: self.home_dir }
         // self drops here — temp_dir is cleaned up
     }
 }
@@ -110,6 +114,8 @@ pub struct TestResult {
     output: String,
     #[allow(dead_code)]
     error: String,
+    #[allow(dead_code)]
+    home_dir: Option<PathBuf>,
 }
 
 impl TestResult {
@@ -135,6 +141,11 @@ impl TestResult {
             s,
             self.output
         );
+    }
+
+    #[allow(dead_code)]
+    pub fn home_dir(&self) -> Option<&std::path::Path> {
+        self.home_dir.as_deref()
     }
 
     #[allow(dead_code)]

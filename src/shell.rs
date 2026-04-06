@@ -51,10 +51,12 @@ impl<IO: ShellIo> Shell<IO> {
 
     pub fn run(&mut self) -> anyhow::Result<()> {
         loop {
-            self.io
-                .borrow_mut()
-                .out_writer()
-                .write_all(Shell::<StandardIo>::prefix().as_bytes())?;
+            {
+                let mut io = self.io.borrow_mut();
+                let w = io.out_writer();
+                w.write_all(Shell::<StandardIo>::prefix().as_bytes())?;
+                w.flush()?;
+            }
 
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;

@@ -7,13 +7,14 @@ use harness::ShellTest;
 // ============================================================================
 
 #[test]
-fn test_executable_detection_with_system_command() {
+fn test_builtin_echo_produces_output() {
+    // `echo` is a ferrish builtin, so its output is captured by MockIo.
+    // This test verifies the builtin path; external-command I/O capture is a TODO.
     let result = ShellTest::new()
         .with_isolated_home()
         .script("echo executable_test")
         .run();
 
-    // System echo should work (running as external command)
     result.assert_output_contains("executable_test");
 }
 
@@ -45,10 +46,11 @@ fn test_executable_in_path() {
         .script(script)
         .run();
 
-    let output = result.output();
-    let error = result.error();
+    // External command stdout bypasses MockIo (known TODO), so we assert there's no error
+    // rather than checking captured output.
     assert!(
-        !output.is_empty() || !error.contains("not found"),
-        "Should be able to execute a platform-appropriate executable lookup command"
+        result.error().is_empty(),
+        "Platform-appropriate executable lookup should run without error, got: {}",
+        result.error()
     );
 }
