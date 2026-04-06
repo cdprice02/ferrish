@@ -1,8 +1,10 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use crate::{
     Command,
     arg::Args,
+    ctx::ShellCtx,
     error::ShellResult,
     executor,
     exit::ExitCode,
@@ -10,16 +12,20 @@ use crate::{
     parser,
 };
 
-pub struct Shell<IO: ShellIo + ?Sized> {
+pub struct Shell<IO: ShellIo> {
     io: RefCell<IO>,
+    ctx: ShellCtx,
 }
 
 pub type StandardShell = Shell<StandardIo>;
 
-impl Shell<dyn ShellIo> {
+/// Non-generic entry points: `prefix()` and `builder()` don't depend on the IO type,
+/// so they live on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
+impl Shell<StandardIo> {
     pub const fn prefix() -> &'static str {
         "\u{1F980}> " // 🦀>
     }
+
     /// Create a shell builder
     ///
     /// # Example
@@ -30,7 +36,7 @@ impl Shell<dyn ShellIo> {
     ///     .with_std_io();
     /// ```
     pub fn builder() -> ShellBuilder {
-        ShellBuilder
+        ShellBuilder::default()
     }
 }
 
@@ -48,7 +54,7 @@ impl<IO: ShellIo> Shell<IO> {
             self.io
                 .borrow_mut()
                 .out_writer()
-                .write_all(Shell::prefix().as_bytes())?;
+                .write_all(Shell::<StandardIo>::prefix().as_bytes())?;
 
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
@@ -108,13 +114,37 @@ impl<IO: ShellIo> Shell<IO> {
         command: Command,
         args: Args,
     ) -> ShellResult<Option<ExitCode>> {
-        executor::execute(command, args, &mut *self.io.borrow_mut())
+        executor::execute(command, args, &mut *self.io.borrow_mut(), &mut self.ctx)
     }
 }
 
-pub struct ShellBuilder;
+#[derive(Default)]
+pub struct ShellBuilder {
+    home_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+}
 
 impl ShellBuilder {
+    /// Set an explicit home directory (overrides env HOME / USERPROFILE)
+    pub fn with_home_dir(mut self, path: PathBuf) -> Self {
+        self.home_dir = Some(path);
+        self
+    }
+
+    /// Set an explicit initial working directory (overrides process CWD)
+    pub fn with_cwd(mut self, path: PathBuf) -> Self {
+        self.cwd = Some(path);
+        self
+    }
+
+    fn build_ctx(self) -> ShellCtx {
+        let base = ShellCtx::from_env();
+        ShellCtx::new(
+            self.home_dir.or(base.home_dir),
+            self.cwd.unwrap_or(base.cwd),
+        )
+    }
+
     /// Configure the shell with standard I/O (stdin/stdout/stderr)
     ///
     /// # Example
@@ -127,6 +157,7 @@ impl ShellBuilder {
     pub fn with_std_io(self) -> Shell<StandardIo> {
         Shell {
             io: RefCell::new(StandardIo::default()),
+            ctx: self.build_ctx(),
         }
     }
 
@@ -144,6 +175,7 @@ impl ShellBuilder {
     pub fn with_io<IO: ShellIo>(self, io: IO) -> Shell<IO> {
         Shell {
             io: RefCell::new(io),
+            ctx: self.build_ctx(),
         }
     }
 }
@@ -192,5 +224,4 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
-
 }

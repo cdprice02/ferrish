@@ -1,22 +1,18 @@
 //! Integration test harness — runs commands through the ferrish library directly
 //! using MockIo, so tarpaulin captures coverage from all integration tests.
 
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use ferrish::io::MockIo;
 use ferrish::Shell;
-
-/// Serializes tests that touch global process state (CWD, HOME) within this test binary.
-/// Note: each `tests/*.rs` file compiles to a separate binary; `cargo test` may run
-/// these binaries in parallel. If races across binaries are observed, run with
-/// `cargo test -j 1` or restructure tests to avoid mutating process-global state.
-static PROCESS_MUTEX: Mutex<()> = Mutex::new(());
 
 pub struct ShellTest {
     home_dir: Option<PathBuf>,
     temp_dir: Option<tempfile::TempDir>,
     script: Option<String>,
+    setup_dirs: Vec<String>,
+    setup_files: Vec<(String, String)>,
 }
 
 impl Default for ShellTest {
@@ -31,6 +27,8 @@ impl ShellTest {
             home_dir: None,
             temp_dir: None,
             script: None,
+            setup_dirs: Vec::new(),
+            setup_files: Vec::new(),
         }
     }
 
@@ -47,26 +45,40 @@ impl ShellTest {
         self
     }
 
+    /// Pre-create a directory relative to the isolated home before running the shell.
+    /// Requires `with_isolated_home()` to be called first.
+    #[allow(dead_code)]
+    pub fn with_dir(mut self, path: &str) -> Self {
+        self.setup_dirs.push(path.to_string());
+        self
+    }
+
+    /// Pre-create a file with the given contents relative to the isolated home.
+    /// Requires `with_isolated_home()` to be called first.
+    #[allow(dead_code)]
+    pub fn with_file(mut self, path: &str, contents: &str) -> Self {
+        self.setup_files.push((path.to_string(), contents.to_string()));
+        self
+    }
+
     pub fn run(self) -> TestResult {
-        // Serialize all tests — CWD and HOME are process-global state.
-        let _guard = PROCESS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = self.home_dir.clone();
 
-        let original_cwd = std::env::current_dir().ok();
-        let original_home = std::env::var("HOME").ok();
-        let original_userprofile = std::env::var("USERPROFILE").ok();
-
-        if let Some(home) = &self.home_dir {
-            // SAFETY: this function holds PROCESS_MUTEX, serializing all
-            // env-var mutations across test threads.
-            unsafe {
-                std::env::set_var("HOME", home);
-                std::env::set_var("USERPROFILE", home);
+        // Apply filesystem setup inside the temp dir.
+        if let (Some(home), Some(_temp_dir)) = (&home, &self.temp_dir) {
+            for dir in &self.setup_dirs {
+                std::fs::create_dir_all(home.join(dir)).expect("setup: create dir");
             }
-            let _ = std::env::set_current_dir(home);
+            for (path, contents) in &self.setup_files {
+                let full = home.join(path);
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent).expect("setup: create parent dir");
+                }
+                let mut f = std::fs::File::create(&full).expect("setup: create file");
+                f.write_all(contents.as_bytes()).expect("setup: write file");
+            }
         }
 
-        // Build MockIo input from the script lines, appending "exit" so Shell::run()
-        // terminates cleanly instead of looping on EOF.
         let mut lines: Vec<String> = self
             .script
             .as_deref()
@@ -78,36 +90,19 @@ impl ShellTest {
 
         let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let io = MockIo::from_lines(&line_refs);
-        let mut shell = Shell::builder().with_io(io);
+
+        let mut builder = Shell::builder();
+        if let Some(h) = home {
+            builder = builder.with_home_dir(h.clone()).with_cwd(h);
+        }
+        let mut shell = builder.with_io(io);
         let _ = shell.run();
 
         let output = String::from_utf8_lossy(shell.io().output()).to_string();
         let error = String::from_utf8_lossy(shell.io().error()).to_string();
 
-        // Restore process state before self.temp_dir is dropped.
-        if let Some(cwd) = original_cwd {
-            let _ = std::env::set_current_dir(&cwd);
-        }
-        // SAFETY: PROCESS_MUTEX is held for the duration of this function.
-        unsafe {
-            restore_env("HOME", original_home);
-            restore_env("USERPROFILE", original_userprofile);
-        }
-
         TestResult { output, error }
-        // self drops here (temp_dir cleaned up), then _guard (mutex released)
-    }
-}
-
-/// # Safety
-/// Callers must hold `PROCESS_MUTEX` to serialize env-var mutations.
-unsafe fn restore_env(key: &str, original: Option<String>) {
-    // SAFETY: caller holds PROCESS_MUTEX.
-    unsafe {
-        match original {
-            Some(val) => std::env::set_var(key, val),
-            None => std::env::remove_var(key),
-        }
+        // self drops here — temp_dir is cleaned up
     }
 }
 

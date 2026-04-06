@@ -1,16 +1,17 @@
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-use crate::env;
-
-pub(crate) fn resolve_path(path: &PathBuf) -> io::Result<PathBuf> {
+pub(crate) fn resolve_path(path: &PathBuf, home_dir: Option<&Path>, cwd: &Path) -> io::Result<PathBuf> {
     let path = if path.is_absolute() {
         path.clone()
     } else if let Ok(stripped) = path.strip_prefix("~") {
-        let home_dir = env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let home = home_dir.unwrap_or(Path::new("/"));
         let stripped = stripped.strip_prefix("/").unwrap_or(stripped);
-        home_dir.join(stripped)
+        home.join(stripped)
     } else {
-        env::current_dir()?.join(path)
+        cwd.join(path)
     };
 
     canonicalize_path(path)
@@ -24,83 +25,76 @@ pub fn canonicalize_path(path: PathBuf) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
+    fn fake_home() -> PathBuf {
+        PathBuf::from("/fake/home")
+    }
+
+    fn fake_cwd() -> PathBuf {
+        PathBuf::from("/fake/cwd")
+    }
+
     #[test]
     fn test_resolve_path_absolute() {
-        let current_dir = env::current_dir().unwrap();
-        let resolved = resolve_path(&current_dir);
+        let path = PathBuf::from("/");
+        let resolved = resolve_path(&path, None, &fake_cwd());
         assert!(resolved.is_ok(), "Failed to resolve absolute path");
         let resolved = resolved.unwrap();
-        let canonical = canonicalize_path(current_dir).unwrap();
+        let canonical = canonicalize_path(PathBuf::from("/")).unwrap();
         assert_eq!(resolved, canonical);
     }
 
     #[test]
     fn test_resolve_path_relative_dots_current() {
-        let current_dir = env::current_dir().unwrap();
+        let cwd = fake_cwd();
         let path = PathBuf::from("./tmp123");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, None, &cwd);
         assert!(resolved.is_ok(), "Failed to resolve relative path with .");
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, current_dir.join("tmp123"));
+        assert_eq!(resolved.unwrap(), cwd.join("tmp123"));
     }
 
     #[test]
     fn test_resolve_path_relative_dots_parent() {
-        let current_dir = env::current_dir().unwrap();
+        let cwd = fake_cwd();
         let path = PathBuf::from("tmp123/inner/../");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, None, &cwd);
         assert!(resolved.is_ok(), "Failed to resolve relative path with ..");
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, current_dir.join("tmp123"));
+        assert_eq!(resolved.unwrap(), cwd.join("tmp123"));
     }
 
     #[test]
     fn test_resolve_path_home_directory() {
-        let home_dir = env::home_dir();
-        if home_dir.is_none() {
-            // Skip test if home directory is not set
-            return;
-        }
-        let home_dir = home_dir.unwrap();
+        let home = fake_home();
         let path = PathBuf::from("~/tmp123");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, Some(&home), &fake_cwd());
         assert!(resolved.is_ok(), "Failed to resolve path with ~");
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, home_dir.join("tmp123"));
+        assert_eq!(resolved.unwrap(), home.join("tmp123"));
     }
 
     #[test]
     fn test_resolve_path_tilde_slash() {
-        let home_dir = env::home_dir();
-        if home_dir.is_none() {
-            return;
-        }
-        let home_dir = home_dir.unwrap();
+        let home = fake_home();
         let path = PathBuf::from("~/");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, Some(&home), &fake_cwd());
         assert!(resolved.is_ok());
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, home_dir);
+        assert_eq!(resolved.unwrap(), home);
     }
 
     #[test]
     fn test_resolve_path_current_dir_relative() {
-        let current_dir = env::current_dir().unwrap();
+        let cwd = fake_cwd();
         let path = PathBuf::from("test_file");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, None, &cwd);
         assert!(resolved.is_ok(), "Failed to resolve relative path");
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, current_dir.join("test_file"));
+        assert_eq!(resolved.unwrap(), cwd.join("test_file"));
     }
 
     #[test]
     fn test_resolve_path_nested_relative() {
-        let current_dir = env::current_dir().unwrap();
+        let cwd = fake_cwd();
         let path = PathBuf::from("./subdir/nested/file");
-        let resolved = resolve_path(&path);
+        let resolved = resolve_path(&path, None, &cwd);
         assert!(resolved.is_ok());
-        let resolved = resolved.unwrap();
-        assert_eq!(resolved, current_dir.join("subdir/nested/file"));
+        assert_eq!(resolved.unwrap(), cwd.join("subdir/nested/file"));
     }
 
     #[test]

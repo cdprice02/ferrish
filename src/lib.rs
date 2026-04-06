@@ -1,5 +1,6 @@
 pub mod arg;
 pub mod command;
+pub mod ctx;
 pub mod env;
 pub mod error;
 pub mod executor;
@@ -33,5 +34,5 @@ pub use shell::Shell;
 /// let result = shell.run();
 /// ```
 pub fn run() -> anyhow::Result<()> {
-    Shell::builder().with_std_io().run()
+    Shell::<crate::io::StandardIo>::builder().with_std_io().run()
 }
