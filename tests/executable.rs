@@ -35,7 +35,8 @@ fn test_command_not_found_error() {
 }
 
 #[test]
-fn test_executable_in_path() {
+fn test_executable_stdout_captured() {
+    // Verifies that external command stdout is routed through ShellIo and captured by MockIo.
     #[cfg(unix)]
     let script = "which sh";
     #[cfg(windows)]
@@ -46,11 +47,14 @@ fn test_executable_in_path() {
         .script(script)
         .run();
 
-    // External command stdout bypasses MockIo (known TODO), so we assert there's no error
-    // rather than checking captured output.
     assert!(
         result.error().is_empty(),
-        "Platform-appropriate executable lookup should run without error, got: {}",
+        "should run without error, got: {}",
         result.error()
+    );
+    assert!(
+        result.output_contains("/"),
+        "expected a path in stdout, got: {}",
+        result.output()
     );
 }

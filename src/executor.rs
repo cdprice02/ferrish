@@ -104,23 +104,24 @@ fn execute_pwd(_args: Args, io: &mut impl ShellIo, ctx: &ShellCtx) -> ShellResul
     Ok(())
 }
 
-// TODO: handle custom I/O (at the moment, this inherits from the parent process which will break tests)
 fn execute_executable(
     executable: crate::command::executable::ExecutableCommand,
     args: Args,
-    _io: &mut impl ShellIo,
+    io: &mut impl ShellIo,
     ctx: &ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-    let mut child = std::process::Command::new(executable.file_path())
+    let output = std::process::Command::new(executable.file_path())
         .args(args)
         .current_dir(&ctx.cwd)
-        .spawn()
+        .output()
         .map_err(ShellError::SpawnFailed)?;
-    let status = child.wait().map_err(ShellError::WaitFailed)?;
 
-    if !status.success() {
-        return Err(ShellError::NonZeroExit(status));
+    io.out_writer().write_all(&output.stdout)?;
+    io.err_writer().write_all(&output.stderr)?;
+
+    if !output.status.success() {
+        return Err(ShellError::NonZeroExit(output.status));
     }
 
     Ok(None)
