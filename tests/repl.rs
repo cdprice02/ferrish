@@ -40,6 +40,28 @@ fn test_repl_sequential_commands() {
 }
 
 // ============================================================================
+// Exit Code Propagation Tests
+// ============================================================================
+
+#[test]
+fn test_exit_zero_propagates() {
+    let result = ShellTest::new().script("exit 0").run();
+    assert_eq!(result.exit_code(), 0);
+}
+
+#[test]
+fn test_exit_nonzero_propagates() {
+    let result = ShellTest::new().script("exit 1").run();
+    assert_eq!(result.exit_code(), 1);
+}
+
+#[test]
+fn test_exit_arbitrary_code_propagates() {
+    let result = ShellTest::new().script("exit 42").run();
+    assert_eq!(result.exit_code(), 42);
+}
+
+// ============================================================================
 // Error Handling and Recovery Tests
 // ============================================================================
 

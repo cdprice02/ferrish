@@ -33,6 +33,6 @@ pub use shell::Shell;
 /// let mut shell = Shell::builder().with_io(io);
 /// let result = shell.run();
 /// ```
-pub fn run() -> anyhow::Result<()> {
+pub fn run() -> anyhow::Result<exit::ExitCode> {
     Shell::<crate::io::StandardIo>::builder().with_std_io().run()
 }

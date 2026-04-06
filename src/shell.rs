@@ -49,7 +49,7 @@ impl<IO: ShellIo> Shell<IO> {
         self.io.borrow_mut()
     }
 
-    pub fn run(&mut self) -> anyhow::Result<()> {
+    pub fn run(&mut self) -> anyhow::Result<ExitCode> {
         loop {
             {
                 let mut io = self.io.borrow_mut();
@@ -71,10 +71,7 @@ impl<IO: ShellIo> Shell<IO> {
 
             let (command, args) = parser::parse(buffer);
             match self.execute_command(command.clone(), args) {
-                Ok(Some(_exit_code)) => {
-                    // TODO: set exit code in caller env
-                    break;
-                }
+                Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
@@ -87,8 +84,6 @@ impl<IO: ShellIo> Shell<IO> {
                 }
             }
         }
-
-        Ok(())
     }
 
     pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<ExitCode> {
