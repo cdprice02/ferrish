@@ -33,11 +33,8 @@ pub enum ShellError {
     #[error("exited with status {0}")]
     NonZeroExit(ExitStatus),
 
-    #[error("failed to spawn: {0}")]
-    SpawnFailed(#[source] std::io::Error),
-
-    #[error("failed to wait: {0}")]
-    WaitFailed(#[source] std::io::Error),
+    #[error("failed to execute: {0}")]
+    ExecutionFailed(#[source] std::io::Error),
 
     // --- I/O ---
     #[error(transparent)]
@@ -57,10 +54,9 @@ impl PartialEq for ShellError {
                 l_arg == r_arg
             }
             (Self::NonZeroExit(l0), Self::NonZeroExit(r0)) => l0 == r0,
-            (Self::SpawnFailed(l0), Self::SpawnFailed(r0)) => {
+            (Self::ExecutionFailed(l0), Self::ExecutionFailed(r0)) => {
                 l0.raw_os_error() == r0.raw_os_error()
             }
-            (Self::WaitFailed(l0), Self::WaitFailed(r0)) => l0.raw_os_error() == r0.raw_os_error(),
             (Self::Io(l0), Self::Io(r0)) => l0.raw_os_error() == r0.raw_os_error(),
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
@@ -70,7 +66,7 @@ impl PartialEq for ShellError {
 impl ShellError {
     /// Check if this error is fatal (should stop execution)
     pub fn is_fatal(&self) -> bool {
-        matches!(self, ShellError::SpawnFailed(_) | ShellError::WaitFailed(_))
+        matches!(self, ShellError::ExecutionFailed(_))
     }
 }
 
@@ -115,14 +111,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_fatal_spawn_failed() {
-        let err = ShellError::SpawnFailed(std::io::Error::last_os_error());
-        assert!(err.is_fatal());
-    }
-
-    #[test]
-    fn test_is_fatal_wait_failed() {
-        let err = ShellError::WaitFailed(std::io::Error::last_os_error());
+    fn test_is_fatal_execution_failed() {
+        let err = ShellError::ExecutionFailed(std::io::Error::last_os_error());
         assert!(err.is_fatal());
     }
 
@@ -192,15 +182,10 @@ mod tests {
     }
 
     #[test]
-    fn test_equality_spawn_wait_io() {
-        // Use synthetic OS error codes to compare raw_os_error equality
-        let s1 = ShellError::SpawnFailed(std::io::Error::from_raw_os_error(2));
-        let s2 = ShellError::SpawnFailed(std::io::Error::from_raw_os_error(2));
+    fn test_equality_execution_failed_and_io() {
+        let s1 = ShellError::ExecutionFailed(std::io::Error::from_raw_os_error(2));
+        let s2 = ShellError::ExecutionFailed(std::io::Error::from_raw_os_error(2));
         assert_eq!(s1, s2);
-
-        let w1 = ShellError::WaitFailed(std::io::Error::from_raw_os_error(3));
-        let w2 = ShellError::WaitFailed(std::io::Error::from_raw_os_error(3));
-        assert_eq!(w1, w2);
 
         let i1 = ShellError::Io(std::io::Error::from_raw_os_error(4));
         let i2 = ShellError::Io(std::io::Error::from_raw_os_error(4));

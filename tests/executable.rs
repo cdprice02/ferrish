@@ -35,22 +35,39 @@ fn test_command_not_found_error() {
 }
 
 #[test]
-fn test_executable_in_path() {
+fn test_executable_stdout_captured() {
+    // Verifies that external command stdout is routed through ShellIo and captured by MockIo.
     #[cfg(unix)]
-    let script = "which sh";
+    let (script, expected) = ("which sh", "sh");
     #[cfg(windows)]
-    let script = "where cmd";
+    let (script, expected) = ("where cmd", "cmd");
 
     let result = ShellTest::new()
         .with_isolated_home()
         .script(script)
         .run();
 
-    // External command stdout bypasses MockIo (known TODO), so we assert there's no error
-    // rather than checking captured output.
     assert!(
         result.error().is_empty(),
-        "Platform-appropriate executable lookup should run without error, got: {}",
+        "should run without error, got: {}",
         result.error()
     );
+    assert!(
+        result.output_contains(expected),
+        "expected '{}' in stdout, got: {}",
+        expected,
+        result.output()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_executable_stderr_captured() {
+    // Verifies that external command stderr is routed through ShellIo and captured by MockIo.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("sh -c 'echo ferrish_stderr_test >&2'")
+        .run();
+
+    result.assert_error_contains("ferrish_stderr_test");
 }
