@@ -115,7 +115,7 @@ fn execute_executable(
         .args(args)
         .current_dir(&ctx.cwd)
         .output()
-        .map_err(ShellError::SpawnFailed)?;
+        .map_err(ShellError::ExecutionFailed)?;
 
     io.out_writer().write_all(&output.stdout)?;
     io.err_writer().write_all(&output.stderr)?;

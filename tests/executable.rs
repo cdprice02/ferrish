@@ -38,9 +38,9 @@ fn test_command_not_found_error() {
 fn test_executable_stdout_captured() {
     // Verifies that external command stdout is routed through ShellIo and captured by MockIo.
     #[cfg(unix)]
-    let script = "which sh";
+    let (script, expected) = ("which sh", "sh");
     #[cfg(windows)]
-    let script = "where cmd";
+    let (script, expected) = ("where cmd", "cmd");
 
     let result = ShellTest::new()
         .with_isolated_home()
@@ -53,8 +53,9 @@ fn test_executable_stdout_captured() {
         result.error()
     );
     assert!(
-        result.output_contains("/"),
-        "expected a path in stdout, got: {}",
+        result.output_contains(expected),
+        "expected '{}' in stdout, got: {}",
+        expected,
         result.output()
     );
 }
