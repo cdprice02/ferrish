@@ -47,54 +47,48 @@ mod tests {
     fn test_resolve_path_relative_dots_current() {
         let cwd = fake_cwd();
         let path = PathBuf::from("./tmp123");
-        let resolved = resolve_path(&path, None, &cwd);
-        assert!(resolved.is_ok(), "Failed to resolve relative path with .");
-        assert_eq!(resolved.unwrap(), cwd.join("tmp123"));
+        let resolved = resolve_path(&path, None, &cwd).unwrap();
+        assert_eq!(resolved, canonicalize_path(cwd.join("tmp123")).unwrap());
     }
 
     #[test]
     fn test_resolve_path_relative_dots_parent() {
         let cwd = fake_cwd();
         let path = PathBuf::from("tmp123/inner/../");
-        let resolved = resolve_path(&path, None, &cwd);
-        assert!(resolved.is_ok(), "Failed to resolve relative path with ..");
-        assert_eq!(resolved.unwrap(), cwd.join("tmp123"));
+        let resolved = resolve_path(&path, None, &cwd).unwrap();
+        assert_eq!(resolved, canonicalize_path(cwd.join("tmp123")).unwrap());
     }
 
     #[test]
     fn test_resolve_path_home_directory() {
         let home = fake_home();
         let path = PathBuf::from("~/tmp123");
-        let resolved = resolve_path(&path, Some(&home), &fake_cwd());
-        assert!(resolved.is_ok(), "Failed to resolve path with ~");
-        assert_eq!(resolved.unwrap(), home.join("tmp123"));
+        let resolved = resolve_path(&path, Some(&home), &fake_cwd()).unwrap();
+        assert_eq!(resolved, canonicalize_path(home.join("tmp123")).unwrap());
     }
 
     #[test]
     fn test_resolve_path_tilde_slash() {
         let home = fake_home();
         let path = PathBuf::from("~/");
-        let resolved = resolve_path(&path, Some(&home), &fake_cwd());
-        assert!(resolved.is_ok());
-        assert_eq!(resolved.unwrap(), home);
+        let resolved = resolve_path(&path, Some(&home), &fake_cwd()).unwrap();
+        assert_eq!(resolved, canonicalize_path(home).unwrap());
     }
 
     #[test]
     fn test_resolve_path_current_dir_relative() {
         let cwd = fake_cwd();
         let path = PathBuf::from("test_file");
-        let resolved = resolve_path(&path, None, &cwd);
-        assert!(resolved.is_ok(), "Failed to resolve relative path");
-        assert_eq!(resolved.unwrap(), cwd.join("test_file"));
+        let resolved = resolve_path(&path, None, &cwd).unwrap();
+        assert_eq!(resolved, canonicalize_path(cwd.join("test_file")).unwrap());
     }
 
     #[test]
     fn test_resolve_path_nested_relative() {
         let cwd = fake_cwd();
         let path = PathBuf::from("./subdir/nested/file");
-        let resolved = resolve_path(&path, None, &cwd);
-        assert!(resolved.is_ok());
-        assert_eq!(resolved.unwrap(), cwd.join("subdir/nested/file"));
+        let resolved = resolve_path(&path, None, &cwd).unwrap();
+        assert_eq!(resolved, canonicalize_path(cwd.join("subdir/nested/file")).unwrap());
     }
 
     #[test]
