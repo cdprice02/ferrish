@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_fatal_spawn_failed() {
+    fn test_is_fatal_execution_failed() {
         let err = ShellError::ExecutionFailed(std::io::Error::last_os_error());
         assert!(err.is_fatal());
     }
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn test_equality_spawn_io() {
+    fn test_equality_execution_failed_and_io() {
         let s1 = ShellError::ExecutionFailed(std::io::Error::from_raw_os_error(2));
         let s2 = ShellError::ExecutionFailed(std::io::Error::from_raw_os_error(2));
         assert_eq!(s1, s2);

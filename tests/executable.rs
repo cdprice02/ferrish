@@ -59,3 +59,15 @@ fn test_executable_stdout_captured() {
         result.output()
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn test_executable_stderr_captured() {
+    // Verifies that external command stderr is routed through ShellIo and captured by MockIo.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("sh -c 'echo ferrish_stderr_test >&2'")
+        .run();
+
+    result.assert_error_contains("ferrish_stderr_test");
+}
