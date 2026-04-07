@@ -61,7 +61,7 @@ impl<IO: ShellIo> Shell<IO> {
             let mut buffer = Vec::<u8>::new();
             let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
             if bytes == 0 {
-                continue;
+                return Ok(ExitCode::SUCCESS);
             }
 
             let buffer = buffer.trim_ascii();
