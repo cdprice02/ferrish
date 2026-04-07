@@ -101,11 +101,13 @@ impl ShellTest {
         let output = String::from_utf8_lossy(shell.io().output()).to_string();
         let error = String::from_utf8_lossy(shell.io().error()).to_string();
 
-        run_result.unwrap_or_else(|err| {
-            panic!("shell.run() failed: {err}\nstdout:\n{output}\nstderr:\n{error}");
-        });
+        let exit_code = run_result
+            .unwrap_or_else(|err| {
+                panic!("shell.run() failed: {err}\nstdout:\n{output}\nstderr:\n{error}");
+            })
+            .0;
 
-        TestResult { output, error, home_dir: self.home_dir }
+        TestResult { output, error, home_dir: self.home_dir, exit_code }
         // self drops here — temp_dir is cleaned up
     }
 }
@@ -116,6 +118,8 @@ pub struct TestResult {
     error: String,
     #[allow(dead_code)]
     home_dir: Option<PathBuf>,
+    #[allow(dead_code)]
+    exit_code: u8,
 }
 
 impl TestResult {
@@ -126,6 +130,11 @@ impl TestResult {
     #[allow(dead_code)]
     pub fn error(&self) -> &str {
         &self.error
+    }
+
+    #[allow(dead_code)]
+    pub fn exit_code(&self) -> u8 {
+        self.exit_code
     }
 
     #[allow(dead_code)]
