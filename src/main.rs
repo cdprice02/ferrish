@@ -1,9 +1,4 @@
-fn main() {
-    match ferrish::run() {
-        Ok(code) => std::process::exit(code.as_i32()),
-        Err(e) => {
-            eprintln!("ferrish: {e:#}");
-            std::process::exit(1);
-        }
-    }
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    let code = ferrish::run()?;
+    Ok(code.into())
 }

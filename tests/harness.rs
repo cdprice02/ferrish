@@ -118,6 +118,7 @@ pub struct TestResult {
     error: String,
     #[allow(dead_code)]
     home_dir: Option<PathBuf>,
+    #[allow(dead_code)]
     exit_code: u8,
 }
 

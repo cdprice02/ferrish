@@ -41,6 +41,12 @@ impl From<ExitCode> for i32 {
     }
 }
 
+impl From<ExitCode> for std::process::ExitCode {
+    fn from(val: ExitCode) -> Self {
+        std::process::ExitCode::from(val.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

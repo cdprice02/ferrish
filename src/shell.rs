@@ -98,7 +98,6 @@ impl<IO: ShellIo> Shell<IO> {
 
             let (command, args) = parser::parse(buffer);
             if let Some(exit_code) = self.execute_command(command, args)? {
-                // TODO: set exit code in caller env instead of returning
                 return Ok(exit_code);
             }
         }
