@@ -1,7 +1,7 @@
 # ferrish 🦀
 
-[![build](https://github-actions-badge.deno.dev/cdprice02/ferrish/ci.yml?label=build-release)](https://github.com/cdprice02/ferrish/actions/workflows/ci.yml)
-[![test](https://github-actions-badge.deno.dev/cdprice02/ferrish/ci.yml?label=test-release)](https://github.com/cdprice02/ferrish/actions/workflows/ci.yml)
+[![build](https://github-actions-badge.deno.dev/cdprice02/ferrish/ci.yml?label=build)](https://github.com/cdprice02/ferrish/actions/workflows/ci.yml)
+[![test](https://github-actions-badge.deno.dev/cdprice02/ferrish/ci.yml?label=test)](https://github.com/cdprice02/ferrish/actions/workflows/ci.yml)
 [![coverage](https://coveralls.io/repos/github/cdprice02/ferrish/badge.svg?branch=main)](https://coveralls.io/github/cdprice02/ferrish?branch=main)
 [![lint](https://github-actions-badge.deno.dev/cdprice02/ferrish/ci.yml?label=lint)](https://github.com/cdprice02/ferrish/actions/workflows/ci.yml)
 <!--

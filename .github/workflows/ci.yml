@@ -3,10 +3,12 @@ name: lint build test
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
-  dev:
-    name: dev (${{ matrix.os }})
+  build:
+    name: build
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -16,9 +18,21 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - name: build dev
+      - name: build
         run: cargo build --verbose
-      - name: test dev
+
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: test
         run: cargo test --verbose
 
   release:
@@ -43,7 +57,7 @@ jobs:
           path: target/release/
 
   lint:
-    name: clippy
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
