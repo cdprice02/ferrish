@@ -19,13 +19,9 @@ pub struct Shell<IO: ShellIo> {
 
 pub type StandardShell = Shell<StandardIo>;
 
-/// Non-generic entry points: `prefix()` and `builder()` don't depend on the IO type,
-/// so they live on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
+/// Non-generic entry points: `builder()` doesn't depend on the IO type,
+/// so it lives on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
 impl Shell<StandardIo> {
-    pub const fn prefix() -> &'static str {
-        "\u{1F980}> " // 🦀>
-    }
-
     /// Create a shell builder
     ///
     /// # Example
@@ -197,11 +193,6 @@ mod tests {
     use super::*;
     use crate::io::MockIo;
     use crate::Arg;
-
-    #[test]
-    fn test_shell_prefix() {
-        assert_eq!(Shell::prefix(), "\u{1F980}> ");
-    }
 
     #[test]
     fn test_shell_execute_command_echo() {
