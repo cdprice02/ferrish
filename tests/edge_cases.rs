@@ -3,58 +3,18 @@ mod harness;
 use harness::ShellTest;
 
 // ============================================================================
-// Edge Cases: cd error conditions
+// Edge Cases
+//
+// This file covers scenarios not already exercised in tests/builtin.rs or
+// tests/repl.rs. Scenarios that duplicate existing coverage (cd-nonexistent,
+// cd-to-file, exit 42, type system executable, sequential echo, empty script)
+// live in those files.
 // ============================================================================
 
-/// cd to a nonexistent directory produces an error containing "no such file"
-#[test]
-fn test_cd_nonexistent_dir_error() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("cd /nonexistent_ferrish_test_path_xyz")
-        .run();
-
-    let error = result.error().to_lowercase();
-    assert!(
-        error.contains("no such file") || error.contains("not found"),
-        "Expected 'no such file' or 'not found' in stderr, got: {}",
-        result.error()
-    );
-}
-
-/// cd to a regular file (not a directory) produces an error containing "not a directory"
-#[test]
-fn test_cd_to_file_produces_not_a_directory_error() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .with_file("regularfile.txt", "hello")
-        .script("cd regularfile.txt")
-        .run();
-
-    let error = result.error().to_lowercase();
-    assert!(
-        error.contains("not a directory"),
-        "Expected 'not a directory' in stderr, got: {}",
-        result.error()
-    );
-}
-
-// ============================================================================
-// Edge Cases: exit with non-zero code
-// ============================================================================
-
-/// exit with code 42 propagates exactly 42 as the process exit code
-#[test]
-fn test_exit_nonzero_code_42() {
-    let result = ShellTest::new().script("exit 42").run();
-    assert_eq!(result.exit_code(), 42, "exit 42 should produce exit code 42");
-}
-
-// ============================================================================
-// Edge Cases: type for a PATH executable
-// ============================================================================
-
-/// type for a builtin command includes "builtin" and the command name in output
+/// type echo specifically identifies echo as a shell builtin (not a PATH binary).
+/// This is distinct from test_type_identifies_builtin in builtin.rs, which uses
+/// `type exit`; it validates that a command with a common system binary namesake
+/// is still correctly identified as a builtin by ferrish.
 #[test]
 fn test_type_builtin_echo_shows_builtin() {
     let result = ShellTest::new()
@@ -75,50 +35,8 @@ fn test_type_builtin_echo_shows_builtin() {
     );
 }
 
-/// type for a system executable (sh on Unix, cmd on Windows) includes "is" and a path
-#[test]
-fn test_type_path_executable_shows_path() {
-    #[cfg(unix)]
-    let (script, expected_name) = ("type sh", "sh");
-    #[cfg(windows)]
-    let (script, expected_name) = ("type cmd", "cmd");
-
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script(script)
-        .run();
-
-    let output = result.output();
-    assert!(
-        output.contains(&format!("{expected_name} is")),
-        "Expected '{expected_name} is <path>' in output, got: {output}"
-    );
-    assert!(
-        output.contains('/') || output.contains('\\'),
-        "Expected a path separator in output, got: {output}"
-    );
-}
-
-// ============================================================================
-// Edge Cases: multiple sequential commands in one session
-// ============================================================================
-
-/// Running echo foo then echo bar in one session produces both in output
-#[test]
-fn test_multiple_sequential_echo_commands() {
-    let result = ShellTest::new()
-        .script("echo foo\necho bar")
-        .run();
-
-    result.assert_output_contains("foo");
-    result.assert_output_contains("bar");
-}
-
-// ============================================================================
-// Edge Cases: empty and whitespace-only input lines
-// ============================================================================
-
-/// Whitespace-only lines do not cause errors or crashes
+/// Whitespace-only lines (spaces and tabs) do not produce errors and the shell
+/// continues processing subsequent commands.
 #[test]
 fn test_whitespace_only_lines_no_error() {
     let result = ShellTest::new()
@@ -131,16 +49,4 @@ fn test_whitespace_only_lines_no_error() {
         result.error()
     );
     result.assert_output_contains("alive");
-}
-
-/// A completely empty script (no commands) runs without error
-#[test]
-fn test_empty_script_no_error() {
-    let result = ShellTest::new().script("").run();
-
-    assert!(
-        result.error().is_empty(),
-        "Empty input should not produce errors, got: {}",
-        result.error()
-    );
 }
