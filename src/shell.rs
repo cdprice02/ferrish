@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::{
     Command,
     arg::Args,
-    ctx::ShellCtx,
+    ctx::{ShellConfig, ShellCtx},
     error::ShellResult,
     executor,
     exit::ExitCode,
@@ -54,7 +54,7 @@ impl<IO: ShellIo> Shell<IO> {
             {
                 let mut io = self.io.borrow_mut();
                 let w = io.out_writer();
-                w.write_all(Shell::<StandardIo>::prefix().as_bytes())?;
+                w.write_all(self.ctx.config.prompt.as_bytes())?;
                 w.flush()?;
             }
 
@@ -118,6 +118,7 @@ impl<IO: ShellIo> Shell<IO> {
 pub struct ShellBuilder {
     home_dir: Option<PathBuf>,
     cwd: Option<PathBuf>,
+    config: Option<ShellConfig>,
 }
 
 impl ShellBuilder {
@@ -133,11 +134,26 @@ impl ShellBuilder {
         self
     }
 
+    /// Override the shell configuration
+    pub fn with_config(mut self, config: ShellConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Override only the prompt string
+    pub fn with_prompt(mut self, prompt: String) -> Self {
+        let mut config = self.config.unwrap_or_default();
+        config.prompt = prompt;
+        self.config = Some(config);
+        self
+    }
+
     fn build_ctx(self) -> ShellCtx {
         let base = ShellCtx::from_env();
-        ShellCtx::new(
+        ShellCtx::with_config(
             self.home_dir.or(base.home_dir),
             self.cwd.unwrap_or(base.cwd),
+            self.config.unwrap_or_default(),
         )
     }
 
