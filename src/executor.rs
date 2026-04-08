@@ -7,9 +7,8 @@ use crate::{
     Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
-    command::executable::ExecutableCommand,
     ctx::ShellCtx,
-    env::get_path_files,
+    env::get_path_dirs,
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
@@ -33,10 +32,10 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
         return CommandKind::Builtin(builtin_name);
     }
 
-    for file in get_path_files().filter(|p| p.is_executable()) {
-        let cmd = ExecutableCommand::new(file);
-        if cmd.name() == name_str {
-            return CommandKind::Executable(cmd.file_path().clone());
+    for dir in get_path_dirs() {
+        let candidate = dir.join(name_str);
+        if candidate.is_executable() {
+            return CommandKind::Executable(candidate);
         }
     }
 
@@ -232,5 +231,43 @@ mod tests {
         let mut io = MockIo::empty();
         execute_pwd(vec![], &mut io, &ctx).unwrap();
         assert_eq!(io.output(), format!("{}\n", cwd.display()).as_bytes());
+    }
+
+    #[test]
+    fn test_execute_type_executable() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let bin_path = dir.path().join("my_test_tool");
+        fs::write(&bin_path, b"#!/bin/sh\n").expect("write fake executable");
+        let mut perms = fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms).expect("set executable bit");
+
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_dirs: Vec<PathBuf> = vec![dir.path().to_path_buf()];
+        new_dirs.extend(std::env::split_paths(&original_path));
+        let new_path = std::env::join_paths(&new_dirs).expect("join paths");
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let args = vec![Arg::from("my_test_tool")];
+        let mut io = MockIo::empty();
+        let result = execute_type(args, &mut io);
+
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        result.unwrap();
+        let output = String::from_utf8(io.output().to_vec()).unwrap();
+        assert!(
+            output.contains("my_test_tool is"),
+            "unexpected output: {output}"
+        );
+        assert!(
+            output.contains(bin_path.to_str().unwrap()),
+            "path not in output: {output}"
+        );
     }
 }
