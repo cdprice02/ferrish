@@ -30,7 +30,7 @@ Modules use **file-based organization** (not mod.rs):
 
 ## Key Development Notes
 
-**Error Reporting**: Use **miette** for user-facing errors with span context and suggestions.
+**Error Reporting**: Use `thiserror` for structured project error types and `anyhow` for error propagation/context; keep user-facing messages clear and actionable.
 
 **Testing**: Shell-bound tests are essential. Beyond unit and integration tests, spawn ferrish as a subprocess to verify actual behavior (I/O, pipes, semantics, signal handling).
 
