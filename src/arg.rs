@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use crate::{Command, parser::parse_command};
-
 pub type Args = Vec<Arg>;
 
 /// Represents a shell command argument
@@ -33,14 +31,6 @@ impl From<&[u8]> for Arg {
 impl From<Vec<u8>> for Arg {
     fn from(val: Vec<u8>) -> Self {
         Arg::Literal(val)
-    }
-}
-
-impl From<&Arg> for Command {
-    fn from(val: &Arg) -> Self {
-        match val {
-            Arg::Literal(bytes) => parse_command(bytes),
-        }
     }
 }
 

@@ -1,13 +1,47 @@
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use is_executable::IsExecutable;
+
 use crate::{
     Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
+    command::executable::ExecutableCommand,
     ctx::ShellCtx,
+    env::get_path_files,
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
     io::ShellIo,
 };
+
+enum CommandKind {
+    Builtin(BuiltInName),
+    Executable(PathBuf),
+    NotFound,
+}
+
+fn resolve_command_type(name: &[u8]) -> CommandKind {
+    if !name.is_ascii() {
+        return CommandKind::NotFound;
+    }
+
+    let name_str = std::str::from_utf8(name).expect("checked ASCII above");
+
+    if let Ok(builtin_name) = BuiltInName::from_str(name_str) {
+        return CommandKind::Builtin(builtin_name);
+    }
+
+    for file in get_path_files().filter(|p| p.is_executable()) {
+        let cmd = ExecutableCommand::new(file);
+        if cmd.name() == name_str {
+            return CommandKind::Executable(cmd.file_path().clone());
+        }
+    }
+
+    CommandKind::NotFound
+}
 
 pub fn execute(
     command: Command,
@@ -84,16 +118,23 @@ fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
         return Err(ShellError::MissingOperand);
     }
 
-    // TODO: get type without fully parsing the arg
-    match Command::from(args.first().expect("at least one arg")) {
-        Command::BuiltIn(builtin) => writeln!(io.out_writer(), "{} is a shell builtin", builtin)?,
-        Command::Executable(executable) => writeln!(
-            io.out_writer(),
-            "{} is {}",
-            executable,
-            executable.file_path().display()
-        )?,
-        Command::Unrecognized(_) => return Err(ShellError::CommandNotFound),
+    let arg = args.first().expect("at least one arg");
+    let name = match arg {
+        Arg::Literal(bytes) => bytes.as_slice(),
+    };
+
+    match resolve_command_type(name) {
+        CommandKind::Builtin(builtin_name) => {
+            writeln!(io.out_writer(), "{} is a shell builtin", builtin_name)?
+        }
+        CommandKind::Executable(path) => {
+            let display_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            writeln!(io.out_writer(), "{} is {}", display_name, path.display())?
+        }
+        CommandKind::NotFound => return Err(ShellError::CommandNotFound),
     }
 
     Ok(())
