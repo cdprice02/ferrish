@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::{
     Command,
     arg::Args,
-    ctx::ShellCtx,
+    ctx::{ShellConfig, ShellCtx},
     error::ShellResult,
     executor,
     exit::ExitCode,
@@ -19,13 +19,9 @@ pub struct Shell<IO: ShellIo> {
 
 pub type StandardShell = Shell<StandardIo>;
 
-/// Non-generic entry points: `prefix()` and `builder()` don't depend on the IO type,
-/// so they live on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
+/// Non-generic entry points: `builder()` doesn't depend on the IO type,
+/// so it lives on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
 impl Shell<StandardIo> {
-    pub const fn prefix() -> &'static str {
-        "\u{1F980}> " // 🦀>
-    }
-
     /// Create a shell builder
     ///
     /// # Example
@@ -54,7 +50,7 @@ impl<IO: ShellIo> Shell<IO> {
             {
                 let mut io = self.io.borrow_mut();
                 let w = io.out_writer();
-                w.write_all(Shell::<StandardIo>::prefix().as_bytes())?;
+                w.write_all(self.ctx.config.prompt.as_bytes())?;
                 w.flush()?;
             }
 
@@ -118,6 +114,7 @@ impl<IO: ShellIo> Shell<IO> {
 pub struct ShellBuilder {
     home_dir: Option<PathBuf>,
     cwd: Option<PathBuf>,
+    config: Option<ShellConfig>,
 }
 
 impl ShellBuilder {
@@ -133,11 +130,26 @@ impl ShellBuilder {
         self
     }
 
+    /// Override the shell configuration
+    pub fn with_config(mut self, config: ShellConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Override only the prompt string
+    pub fn with_prompt(mut self, prompt: String) -> Self {
+        let mut config = self.config.unwrap_or_default();
+        config.prompt = prompt;
+        self.config = Some(config);
+        self
+    }
+
     fn build_ctx(self) -> ShellCtx {
         let base = ShellCtx::from_env();
-        ShellCtx::new(
+        ShellCtx::with_config(
             self.home_dir.or(base.home_dir),
             self.cwd.unwrap_or(base.cwd),
+            self.config.unwrap_or_default(),
         )
     }
 
@@ -181,11 +193,6 @@ mod tests {
     use super::*;
     use crate::io::MockIo;
     use crate::Arg;
-
-    #[test]
-    fn test_shell_prefix() {
-        assert_eq!(Shell::prefix(), "\u{1F980}> ");
-    }
 
     #[test]
     fn test_shell_execute_command_echo() {
