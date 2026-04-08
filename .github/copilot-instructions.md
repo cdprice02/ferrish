@@ -18,16 +18,19 @@ These principles guide all development decisions:
 
 Modules use **file-based organization** (not mod.rs):
 
-- `src/lexer.rs` - Tokenization
-- `src/parser.rs` - AST construction
-- `src/evaluator.rs` - Execution
-- `src/repl.rs` - Interactive shell loop
-- `src/builtins.rs` - Built-in commands
-- `src/shell_io.rs` - I/O management
+- `src/shell.rs` — REPL loop; reads input, calls parser, calls executor, handles fatal vs. recoverable errors
+- `src/parser.rs` — Splits input into command + args; resolves whether the command is a built-in, a PATH executable, or unrecognized
+- `src/executor.rs` — Dispatches to built-in handlers or spawns external processes
+- `src/command/builtin.rs` — Implementations of `exit`, `cd`, `echo`, `pwd`, `type`
+- `src/command/executable.rs` — Wraps an external binary found on PATH
+- `src/io.rs` — `ShellIo` trait with `StandardIo` (real I/O) and `MockIo` (testing)
+- `src/ctx.rs` — Shell context and state
+- `src/error.rs` — `ShellError` enum; distinguishes fatal from recoverable errors
+- `src/arg.rs` — Argument parsing and representation
 
 ## Key Development Notes
 
-**Error Reporting**: Source span errors in lexer/parser are critical for user experience. Use **miette** to provide context and suggestions.
+**Error Reporting**: Use `thiserror` for structured project error types and `anyhow` for error propagation/context; keep user-facing messages clear and actionable.
 
 **Testing**: Shell-bound tests are essential. Beyond unit and integration tests, spawn ferrish as a subprocess to verify actual behavior (I/O, pipes, semantics, signal handling).
 
