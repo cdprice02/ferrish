@@ -18,6 +18,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo build --verbose
 
@@ -32,6 +33,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: test
         run: cargo test --verbose
 
@@ -51,10 +53,12 @@ jobs:
       - name: test release
         run: cargo test --release --verbose
       - name: upload release artifacts
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: release-build-${{ matrix.os }}
           path: target/release/
+          retention-days: 7
 
   lint:
     name: lint
