@@ -29,7 +29,7 @@ Prefer integration tests via the `ShellTest` harness in `tests/harness.rs` for a
 
 ## Lint
 
-`cargo clippy -- -D warnings` is enforced by CI. No warnings are allowed. Fix warnings before opening a PR rather than suppressing them with `#[allow(...)]` unless suppression is genuinely justified.
+`cargo clippy --all-targets --all-features -- -D warnings` is enforced by CI. No warnings are allowed. Fix warnings before opening a PR rather than suppressing them with `#[allow(...)]` unless suppression is genuinely justified.
 
 ## Core Principles
 
