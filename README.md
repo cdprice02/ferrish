@@ -66,15 +66,7 @@ Compatibility may be explored selectively, but only when it aligns with ferrish�
 
 ## Contributing
 
-ferrish is in early development, and contributions are welcome once the core architecture begins to stabilize.
-
-If you’re interested in contributing:
-
-* Open an issue to discuss ideas before starting major work
-* Keep changes focused and aligned with ferrish’s core principles
-* Prefer clarity and correctness over clever optimizations
-
-More detailed contribution guidelines may be added as the project matures.
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for branch conventions, PR workflow, test requirements, and project principles.
 
 ---
 
