@@ -1,3 +1,4 @@
+/// A resolved shell built-in command ready for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltInCommand {
     name: BuiltInName,
@@ -10,22 +11,30 @@ impl std::fmt::Display for BuiltInCommand {
 }
 
 impl BuiltInCommand {
+    /// Create a new `BuiltInCommand` for the given built-in name.
     pub fn new(name: BuiltInName) -> Self {
         Self { name }
     }
 
+    /// Return the built-in name for this command.
     pub fn name(&self) -> BuiltInName {
         self.name
     }
 }
 
+/// The set of built-in commands supported by the shell.
 #[derive(strum::EnumString, strum::AsRefStr, strum::Display, Debug, Clone, Copy, PartialEq, Eq)]
 #[strum(serialize_all = "lowercase")]
 pub enum BuiltInName {
+    /// Terminate the shell process.
     Exit,
+    /// Write arguments to standard output.
     Echo,
+    /// Report the type of a command (built-in, executable, or unknown).
     Type,
+    /// Print the current working directory.
     Pwd,
+    /// Change the current working directory.
     Cd,
 }
 

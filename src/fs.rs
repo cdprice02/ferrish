@@ -17,6 +17,7 @@ pub(crate) fn resolve_path(path: &PathBuf, home_dir: Option<&Path>, cwd: &Path) 
     canonicalize_path(path)
 }
 
+/// Canonicalize `path`, resolving `.` and `..` without requiring the path to exist.
 pub fn canonicalize_path(path: PathBuf) -> io::Result<PathBuf> {
     soft_canonicalize::soft_canonicalize(path)
 }

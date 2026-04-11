@@ -8,6 +8,7 @@ use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
 
+/// Parse a raw input line into a [`Command`] and its argument list.
 pub fn parse(buffer: &[u8]) -> (Command, Args) {
     let (command, args) = split_command_and_args(buffer);
     let command = parse_command(command);
@@ -41,6 +42,7 @@ fn split_command_and_args(buffer: &[u8]) -> (&[u8], Vec<&[u8]>) {
     (command, args)
 }
 
+/// Resolve a raw command token to a [`Command`] variant.
 pub fn parse_command(command: &[u8]) -> Command {
     if !command.is_ascii() {
         return Command::Unrecognized(command.into());
@@ -64,6 +66,7 @@ pub fn parse_command(command: &[u8]) -> Command {
     }
 }
 
+/// Parse a raw byte slice into an [`Arg`].
 pub fn parse_arg(arg: &[u8]) -> Arg {
     Arg::Literal(arg.to_vec())
 }

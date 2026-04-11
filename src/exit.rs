@@ -1,10 +1,14 @@
+/// A shell process exit code (0–255).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ExitCode(pub u8);
 
 impl ExitCode {
+    /// Successful exit (code 0).
     pub const SUCCESS: Self = ExitCode(0);
+    /// Generic failure exit (code 1).
     pub const FAILURE: Self = ExitCode(1);
 
+    /// Return the exit code as an `i32` for use with [`std::process::exit`].
     pub fn as_i32(&self) -> i32 {
         self.0 as i32
     }

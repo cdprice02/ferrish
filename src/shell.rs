@@ -12,11 +12,15 @@ use crate::{
     parser,
 };
 
+/// The ferrish shell REPL.
+///
+/// Generic over an I/O backend; use [`Shell::builder()`] to construct instances.
 pub struct Shell<IO: ShellIo> {
     io: RefCell<IO>,
     ctx: ShellCtx,
 }
 
+/// Type alias for a [`Shell`] backed by real stdin/stdout/stderr.
 pub type StandardShell = Shell<StandardIo>;
 
 /// Non-generic entry points: `builder()` doesn't depend on the IO type,
@@ -37,14 +41,17 @@ impl Shell<StandardIo> {
 }
 
 impl<IO: ShellIo> Shell<IO> {
+    /// Return a shared borrow of the I/O backend.
     pub fn io(&self) -> std::cell::Ref<'_, IO> {
         self.io.borrow()
     }
 
+    /// Return an exclusive borrow of the I/O backend.
     pub fn io_mut(&'_ mut self) -> std::cell::RefMut<'_, IO> {
         self.io.borrow_mut()
     }
 
+    /// Run the interactive REPL loop until `exit` is called or stdin is exhausted.
     pub fn run(&mut self) -> anyhow::Result<ExitCode> {
         loop {
             {
@@ -82,6 +89,7 @@ impl<IO: ShellIo> Shell<IO> {
         }
     }
 
+    /// Execute a sequence of command lines as a non-interactive script.
     pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<ExitCode> {
         for line in script {
             let buffer = line.as_bytes();
@@ -101,6 +109,7 @@ impl<IO: ShellIo> Shell<IO> {
         Ok(ExitCode::SUCCESS)
     }
 
+    /// Execute a single parsed command, returning an optional exit code.
     pub fn execute_command(
         &mut self,
         command: Command,
@@ -110,6 +119,7 @@ impl<IO: ShellIo> Shell<IO> {
     }
 }
 
+/// Builder for constructing a [`Shell`] with custom I/O and configuration.
 #[derive(Default)]
 pub struct ShellBuilder {
     home_dir: Option<PathBuf>,

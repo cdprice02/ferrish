@@ -2,9 +2,13 @@ use std::path::PathBuf;
 
 use crate::env;
 
+/// Configurable shell settings.
 pub struct ShellConfig {
+    /// The prompt string displayed before each input line.
     pub prompt: String,
+    /// Optional path to the shell history file.
     pub history_path: Option<PathBuf>,
+    /// Maximum number of history entries to retain.
     pub max_history: usize,
 }
 
@@ -18,17 +22,23 @@ impl Default for ShellConfig {
     }
 }
 
+/// Runtime context shared across all shell operations.
 pub struct ShellCtx {
+    /// The user's home directory, if known.
     pub home_dir: Option<PathBuf>,
+    /// The current working directory.
     pub cwd: PathBuf,
+    /// Shell configuration.
     pub config: ShellConfig,
 }
 
 impl ShellCtx {
+    /// Create a new context with default configuration.
     pub fn new(home_dir: Option<PathBuf>, cwd: PathBuf) -> Self {
         Self { home_dir, cwd, config: ShellConfig::default() }
     }
 
+    /// Create a new context with explicit configuration.
     pub fn with_config(home_dir: Option<PathBuf>, cwd: PathBuf, config: ShellConfig) -> Self {
         Self { home_dir, cwd, config }
     }

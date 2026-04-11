@@ -13,30 +13,47 @@ pub type ShellResult<T> = anyhow::Result<T, ShellError>;
 #[derive(Error, Debug)]
 pub enum ShellError {
     // --- Command-level ---
+    /// The requested command could not be found as a built-in or on `PATH`.
     #[error("command not found")]
     CommandNotFound,
 
+    /// A required operand was not provided.
     #[error("missing operand")]
     MissingOperand,
 
     // --- File system ---
+    /// The path does not exist on the filesystem.
     #[error("no such file or directory: {arg}")]
-    FileNotFound { arg: Arg },
+    FileNotFound {
+        /// The argument that referred to the missing path.
+        arg: Arg,
+    },
 
+    /// The path exists but is a directory where a regular file was expected.
     #[error("is a directory: {arg}")]
-    IsADirectory { arg: Arg },
+    IsADirectory {
+        /// The argument that referred to the directory.
+        arg: Arg,
+    },
 
+    /// The path exists but is a regular file where a directory was expected.
     #[error("not a directory: {arg}")]
-    NotADirectory { arg: Arg },
+    NotADirectory {
+        /// The argument that referred to the non-directory path.
+        arg: Arg,
+    },
 
     // --- Process execution ---
+    /// The child process exited with a non-zero status code.
     #[error("exited with status {0}")]
     NonZeroExit(ExitStatus),
 
+    /// The shell failed to spawn or wait on the child process.
     #[error("failed to execute: {0}")]
     ExecutionFailed(#[source] std::io::Error),
 
     // --- I/O ---
+    /// An I/O error propagated from the underlying stream.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

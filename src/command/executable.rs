@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+/// An external executable command located on `PATH`.
 #[derive(Debug, Clone)]
 pub struct ExecutableCommand {
     file_path: PathBuf,
@@ -12,14 +13,17 @@ impl std::fmt::Display for ExecutableCommand {
 }
 
 impl ExecutableCommand {
+    /// Create a new `ExecutableCommand` for the given path.
     pub fn new(file_path: PathBuf) -> Self {
         Self { file_path }
     }
 
+    /// Return the path to the executable.
     pub fn file_path(&self) -> &PathBuf {
         &self.file_path
     }
 
+    /// Return the executable name (file stem without extension).
     pub fn name(&self) -> &str {
         self.file_path
             .file_stem()

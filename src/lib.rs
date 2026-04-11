@@ -1,13 +1,27 @@
+#![deny(missing_docs)]
+//! ferrish — an early-stage shell implementation in Rust.
+
+/// Shell command argument types.
 pub mod arg;
+/// Shell command variants (built-in, executable, unrecognized).
 pub mod command;
+/// Shell context and configuration.
 pub mod ctx;
+/// Environment variable and filesystem path helpers.
 pub mod env;
+/// Error types for shell execution.
 pub mod error;
+/// Command dispatch and execution logic.
 pub mod executor;
+/// Process exit code type.
 pub mod exit;
+/// Filesystem path utilities.
 pub mod fs;
+/// I/O abstraction layer for the shell.
 pub mod io;
+/// Input parsing: splits raw bytes into a command and its arguments.
 pub mod parser;
+/// The interactive REPL shell.
 pub mod shell;
 
 pub use arg::Arg;

@@ -50,6 +50,9 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
     CommandKind::NotFound
 }
 
+/// Dispatch and execute a parsed command, returning an optional exit code.
+///
+/// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
 pub fn execute(
     command: Command,
     args: Args,

@@ -1,15 +1,21 @@
 use std::io::{self, BufRead, BufReader, Write};
 
+/// Abstraction over shell I/O streams, enabling both real and mock implementations.
 pub trait ShellIo {
+    /// Return a mutable reference to the input reader.
     fn reader(&mut self) -> &mut dyn BufRead;
+    /// Return a mutable reference to the standard output writer.
     fn out_writer(&mut self) -> &mut dyn Write;
+    /// Return a mutable reference to the standard error writer.
     fn err_writer(&mut self) -> &mut dyn Write;
 
+    /// Read one line (up to and including `\n`) into `buffer`.
     fn read_line(&mut self, buffer: &mut Vec<u8>) -> io::Result<usize> {
         self.reader().read_until(b'\n', buffer)
     }
 }
 
+/// [`ShellIo`] implementation backed by the real `stdin`/`stdout`/`stderr` streams.
 #[derive(Debug)]
 pub struct StandardIo {
     reader: std::io::BufReader<std::io::Stdin>,
@@ -41,6 +47,7 @@ impl ShellIo for StandardIo {
     }
 }
 
+/// In-memory [`ShellIo`] implementation for use in tests.
 #[derive(Debug)]
 pub struct MockIo {
     reader: BufReader<std::io::Cursor<Vec<u8>>>,
@@ -49,6 +56,7 @@ pub struct MockIo {
 }
 
 impl MockIo {
+    /// Create a `MockIo` with the given raw bytes as stdin input.
     pub fn new(input: Vec<u8>) -> Self {
         Self {
             reader: BufReader::new(std::io::Cursor::new(input)),
@@ -57,10 +65,12 @@ impl MockIo {
         }
     }
 
+    /// Create a `MockIo` with no stdin input.
     pub fn empty() -> Self {
         Self::new(Vec::new())
     }
 
+    /// Create a `MockIo` where stdin contains each element of `lines` as a newline-terminated line.
     pub fn from_lines(lines: &[&str]) -> Self {
         let input_lines = lines
             .iter()
@@ -74,10 +84,12 @@ impl MockIo {
         Self::new(input_lines.concat())
     }
 
+    /// Return all bytes written to the stdout writer so far.
     pub fn output(&self) -> &[u8] {
         &self.output
     }
 
+    /// Return all bytes written to the stderr writer so far.
     pub fn error(&self) -> &[u8] {
         &self.error
     }
