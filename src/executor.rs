@@ -158,18 +158,31 @@ fn execute_executable(
     io: &mut impl ShellIo,
     ctx: &ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
+    use std::process::Stdio;
+
     let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-    let output = std::process::Command::new(executable.file_path())
+    let mut child = std::process::Command::new(executable.file_path())
         .args(args)
         .current_dir(&ctx.cwd)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(ShellError::ExecutionFailed)?;
 
-    io.out_writer().write_all(&output.stdout)?;
-    io.err_writer().write_all(&output.stderr)?;
+    // Forward stdout incrementally, then stderr. Sequential copy avoids the
+    // need for threads (ShellIo is ?Send) and is correct for commands that
+    // close stdout before writing stderr (the common case).
+    if let Some(mut child_stdout) = child.stdout.take() {
+        std::io::copy(&mut child_stdout, io.out_writer())?;
+    }
+    if let Some(mut child_stderr) = child.stderr.take() {
+        std::io::copy(&mut child_stderr, io.err_writer())?;
+    }
 
-    if !output.status.success() {
-        return Err(ShellError::NonZeroExit(output.status));
+    let status = child.wait().map_err(ShellError::ExecutionFailed)?;
+
+    if !status.success() {
+        return Err(ShellError::NonZeroExit(status));
     }
 
     Ok(None)
