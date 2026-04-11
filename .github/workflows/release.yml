@@ -1,10 +1,9 @@
 name: release
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   release:
@@ -24,9 +23,10 @@ jobs:
       - name: test release
         run: cargo test --release --verbose
       - name: upload release artifacts
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: release-build-${{ matrix.os }}
-          path: target/release/
+          path: |
+            target/release/ferrish
+            target/release/ferrish.exe
           retention-days: 7

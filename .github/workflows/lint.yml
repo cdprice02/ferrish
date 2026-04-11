@@ -30,7 +30,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: install tarpaulin
-        run: cargo install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.31.5 --locked
       - name: run coverage
         env:
           COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
