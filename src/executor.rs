@@ -158,18 +158,54 @@ fn execute_executable(
     io: &mut impl ShellIo,
     ctx: &ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
+    use std::process::Stdio;
+    use std::thread;
+
     let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-    let output = std::process::Command::new(executable.file_path())
+    let mut child = std::process::Command::new(executable.file_path())
         .args(args)
         .current_dir(&ctx.cwd)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(ShellError::ExecutionFailed)?;
 
-    io.out_writer().write_all(&output.stdout)?;
-    io.err_writer().write_all(&output.stderr)?;
+    // Drain both pipes concurrently on separate threads to avoid deadlock:
+    // if the child fills one pipe's buffer while we are blocked reading the
+    // other, neither side can make progress.  `ChildStdout`/`ChildStderr` are
+    // `Send`, so they can be moved into threads safely.  We accumulate bytes
+    // into `Vec<u8>` and write them into `ShellIo` after joining — keeping
+    // the `?Send` `ShellIo` exclusively on the calling thread.
+    let stdout_thread = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::copy(&mut pipe, &mut buf)?;
+            Ok(buf)
+        })
+    });
+    let stderr_thread = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::copy(&mut pipe, &mut buf)?;
+            Ok(buf)
+        })
+    });
 
-    if !output.status.success() {
-        return Err(ShellError::NonZeroExit(output.status));
+    // Always wait on the child so it is reaped even when I/O copy fails.
+    let status = child.wait().map_err(ShellError::ExecutionFailed)?;
+
+    // Collect thread results; propagate the first I/O error encountered.
+    if let Some(handle) = stdout_thread {
+        let bytes = handle.join().expect("stdout thread panicked")?;
+        io.out_writer().write_all(&bytes)?;
+    }
+    if let Some(handle) = stderr_thread {
+        let bytes = handle.join().expect("stderr thread panicked")?;
+        io.err_writer().write_all(&bytes)?;
+    }
+
+    if !status.success() {
+        return Err(ShellError::NonZeroExit(status));
     }
 
     Ok(None)

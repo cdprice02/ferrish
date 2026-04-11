@@ -71,3 +71,24 @@ fn test_executable_stderr_captured() {
 
     result.assert_error_contains("ferrish_stderr_test");
 }
+
+#[test]
+#[cfg(unix)]
+fn test_executable_both_streams_captured() {
+    // Verifies that both stdout and stderr from an external command are captured
+    // when a single command writes to both streams.  The shell runs two commands
+    // back-to-back so that both streams exercise the threaded draining path.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("which sh\nsh -c 'echo ferrish_err_both >&2'")
+        .run();
+
+    // stdout: `which sh` should print the path to sh
+    assert!(
+        result.output_contains("sh"),
+        "stdout not captured: {}",
+        result.output()
+    );
+    // stderr: the redirected echo should appear in stderr
+    result.assert_error_contains("ferrish_err_both");
+}
