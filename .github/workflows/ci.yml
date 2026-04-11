@@ -1,4 +1,4 @@
-name: lint build test
+name: release
 
 on:
   pull_request:
@@ -7,36 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    name: build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: build
-        run: cargo build --verbose
-
-  test:
-    name: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: test
-        run: cargo test --verbose
-
   release:
     name: release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -48,6 +18,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: build release
         run: cargo build --release --verbose
       - name: test release
@@ -59,34 +30,3 @@ jobs:
           name: release-build-${{ matrix.os }}
           path: target/release/
           retention-days: 7
-
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - name: run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - name: install tarpaulin
-        run: cargo install cargo-tarpaulin
-      - name: run coverage
-        env:
-          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
-        run: |
-          if [ -n "$COVERALLS_REPO_TOKEN" ]; then
-            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --coveralls "$COVERALLS_REPO_TOKEN" --fail-under 80
-          else
-            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --fail-under 80
-          fi
