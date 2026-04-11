@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build release
+        run: cargo build --release --verbose
+      - name: test release
+        run: cargo test --release --verbose
+      - name: upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-${{ matrix.os }}
+          path: |
+            target/release/ferrish
+            target/release/ferrish.exe
+          retention-days: 7
