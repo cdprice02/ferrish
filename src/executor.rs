@@ -37,6 +37,14 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
         if candidate.is_executable() {
             return CommandKind::Executable(candidate);
         }
+        // On Windows executables typically carry a .exe extension
+        #[cfg(windows)]
+        {
+            let candidate_exe = dir.join(format!("{name_str}.exe"));
+            if candidate_exe.is_executable() {
+                return CommandKind::Executable(candidate_exe);
+            }
+        }
     }
 
     CommandKind::NotFound
