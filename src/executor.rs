@@ -233,6 +233,7 @@ mod tests {
         assert_eq!(io.output(), format!("{}\n", cwd.display()).as_bytes());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_execute_type_executable() {
         use std::fs;
