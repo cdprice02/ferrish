@@ -44,7 +44,7 @@ pub(crate) fn get_path_files() -> impl Iterator<Item = PathBuf> {
     })
 }
 
-fn get_path_dirs() -> impl Iterator<Item = PathBuf> {
+pub(crate) fn get_path_dirs() -> impl Iterator<Item = PathBuf> {
     let path = env::var_os("PATH").unwrap_or_default();
     env::split_paths(&path)
         .collect::<Vec<_>>()

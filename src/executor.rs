@@ -1,13 +1,54 @@
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use is_executable::IsExecutable;
+
 use crate::{
     Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
     ctx::ShellCtx,
+    env::get_path_dirs,
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
     io::ShellIo,
 };
+
+enum CommandKind {
+    Builtin(BuiltInName),
+    Executable(PathBuf),
+    NotFound,
+}
+
+fn resolve_command_type(name: &[u8]) -> CommandKind {
+    if !name.is_ascii() {
+        return CommandKind::NotFound;
+    }
+
+    let name_str = std::str::from_utf8(name).expect("checked ASCII above");
+
+    if let Ok(builtin_name) = BuiltInName::from_str(name_str) {
+        return CommandKind::Builtin(builtin_name);
+    }
+
+    for dir in get_path_dirs() {
+        let candidate = dir.join(name_str);
+        if candidate.is_executable() {
+            return CommandKind::Executable(candidate);
+        }
+        // On Windows executables typically carry a .exe extension
+        #[cfg(windows)]
+        {
+            let candidate_exe = dir.join(format!("{name_str}.exe"));
+            if candidate_exe.is_executable() {
+                return CommandKind::Executable(candidate_exe);
+            }
+        }
+    }
+
+    CommandKind::NotFound
+}
 
 pub fn execute(
     command: Command,
@@ -84,16 +125,23 @@ fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
         return Err(ShellError::MissingOperand);
     }
 
-    // TODO: get type without fully parsing the arg
-    match Command::from(args.first().expect("at least one arg")) {
-        Command::BuiltIn(builtin) => writeln!(io.out_writer(), "{} is a shell builtin", builtin)?,
-        Command::Executable(executable) => writeln!(
-            io.out_writer(),
-            "{} is {}",
-            executable,
-            executable.file_path().display()
-        )?,
-        Command::Unrecognized(_) => return Err(ShellError::CommandNotFound),
+    let arg = args.first().expect("at least one arg");
+    let name = match arg {
+        Arg::Literal(bytes) => bytes.as_slice(),
+    };
+
+    match resolve_command_type(name) {
+        CommandKind::Builtin(builtin_name) => {
+            writeln!(io.out_writer(), "{} is a shell builtin", builtin_name)?
+        }
+        CommandKind::Executable(path) => {
+            let display_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            writeln!(io.out_writer(), "{} is {}", display_name, path.display())?
+        }
+        CommandKind::NotFound => return Err(ShellError::CommandNotFound),
     }
 
     Ok(())
@@ -191,5 +239,44 @@ mod tests {
         let mut io = MockIo::empty();
         execute_pwd(vec![], &mut io, &ctx).unwrap();
         assert_eq!(io.output(), format!("{}\n", cwd.display()).as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_execute_type_executable() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let bin_path = dir.path().join("my_test_tool");
+        fs::write(&bin_path, b"#!/bin/sh\n").expect("write fake executable");
+        let mut perms = fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms).expect("set executable bit");
+
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_dirs: Vec<PathBuf> = vec![dir.path().to_path_buf()];
+        new_dirs.extend(std::env::split_paths(&original_path));
+        let new_path = std::env::join_paths(&new_dirs).expect("join paths");
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let args = vec![Arg::from("my_test_tool")];
+        let mut io = MockIo::empty();
+        let result = execute_type(args, &mut io);
+
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        result.unwrap();
+        let output = String::from_utf8(io.output().to_vec()).unwrap();
+        assert!(
+            output.contains("my_test_tool is"),
+            "unexpected output: {output}"
+        );
+        assert!(
+            output.contains(bin_path.to_str().unwrap()),
+            "path not in output: {output}"
+        );
     }
 }
