@@ -13,12 +13,12 @@ impl std::fmt::Display for ExecutableCommand {
 }
 
 impl ExecutableCommand {
-    /// Create a new `ExecutableCommand` for the given absolute path.
+    /// Create a new `ExecutableCommand` for the given path.
     pub fn new(file_path: PathBuf) -> Self {
         Self { file_path }
     }
 
-    /// Return the absolute path to the executable.
+    /// Return the path to the executable.
     pub fn file_path(&self) -> &PathBuf {
         &self.file_path
     }
