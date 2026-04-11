@@ -3,11 +3,14 @@ use std::fmt::Display;
 pub(crate) mod builtin;
 pub(crate) mod executable;
 
-/// Represents a shell command
+/// Represents a shell command.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// A shell built-in command (e.g. `echo`, `cd`, `exit`).
     BuiltIn(builtin::BuiltInCommand),
+    /// An external executable found on `PATH`.
     Executable(executable::ExecutableCommand),
+    /// A command token that could not be resolved to a built-in or executable.
     Unrecognized(Vec<u8>),
 }
 

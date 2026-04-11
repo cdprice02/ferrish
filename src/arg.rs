@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+/// A list of shell command arguments.
 pub type Args = Vec<Arg>;
 
-/// Represents a shell command argument
+/// Represents a shell command argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
+    /// A raw byte sequence argument with no further interpretation.
     Literal(Vec<u8>),
 }
 
