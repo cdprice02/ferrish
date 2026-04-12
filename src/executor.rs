@@ -137,9 +137,7 @@ fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
     }
 
     let arg = args.first().expect("at least one arg");
-    let name = match arg {
-        Arg::Literal(bytes) => bytes.as_slice(),
-    };
+    let name = arg.as_bytes();
 
     match resolve_command_type(name) {
         CommandKind::Builtin(builtin_name) => {

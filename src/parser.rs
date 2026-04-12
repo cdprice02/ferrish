@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use is_executable::IsExecutable;
 
-use crate::arg::{Arg, Args};
+use crate::arg::{Arg, Args, QuoteStyle};
 use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
@@ -12,7 +12,13 @@ use crate::env::get_path_files;
 pub fn parse(buffer: &[u8]) -> (Command, Args) {
     let (command, args) = split_command_and_args(buffer);
     let command = parse_command(&command);
-    let args = args.into_iter().map(Arg::Literal).collect();
+    let args = args
+        .into_iter()
+        .map(|(bytes, style)| match style {
+            QuoteStyle::None => Arg::Literal(bytes),
+            style => Arg::Quoted { bytes, style },
+        })
+        .collect();
     (command, args)
 }
 
@@ -30,9 +36,9 @@ pub fn parse(buffer: &[u8]) -> (Command, Args) {
 /// consumes the backslash (e.g. `\ ` → space, `\\` → `\`).
 ///
 /// Adjacent quoted and unquoted segments are concatenated into a single token.
-fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
     let buffer = buffer.trim_ascii();
-    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut parts: Vec<(Vec<u8>, QuoteStyle)> = Vec::new();
 
     let mut current: Vec<u8> = Vec::new();
     let mut in_single_quote = false;
@@ -42,6 +48,10 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     // single-quotes the shell spec says empty quotes produce an empty argument
     // only if they stand alone, which the concatenation logic handles naturally).
     let mut token_started = false;
+    // Quote style for the token currently being built. None = unstarted; once set
+    // to Single or Double it stays unless a byte from a different quoting context
+    // arrives, at which point it becomes None (unquoted/mixed).
+    let mut token_style: Option<QuoteStyle> = None;
 
     let mut i = 0;
     while i < buffer.len() {
@@ -79,26 +89,42 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
                 current.push(buffer[i]);
             }
             token_started = true;
+            // Unquoted bytes make this a mixed/unquoted token.
+            token_style = Some(QuoteStyle::None);
         } else if byte == b'\'' {
             // Opening single quote — enter single-quote mode and mark token as started.
             // Even empty quotes (e.g. `''`) count as beginning a token so that a
             // standalone `''` produces one empty argument rather than being dropped.
             in_single_quote = true;
             token_started = true;
+            // Only keep Single style if the token has been purely single-quoted so far.
+            if token_style.is_none() {
+                token_style = Some(QuoteStyle::Single);
+            } else if !matches!(token_style, Some(QuoteStyle::Single)) {
+                token_style = Some(QuoteStyle::None);
+            }
         } else if byte == b'"' {
             // Opening double quote — enter double-quote mode and mark token as started.
             // Same empty-quote semantics as single quotes.
             in_double_quote = true;
             token_started = true;
+            // Only keep Double style if the token has been purely double-quoted so far.
+            if token_style.is_none() {
+                token_style = Some(QuoteStyle::Double);
+            } else if !matches!(token_style, Some(QuoteStyle::Double)) {
+                token_style = Some(QuoteStyle::None);
+            }
         } else if byte.is_ascii_whitespace() {
             if token_started || !current.is_empty() {
-                parts.push(current);
-                current = Vec::new();
+                let style = token_style.take().unwrap_or(QuoteStyle::None);
+                parts.push((std::mem::take(&mut current), style));
                 token_started = false;
             }
         } else {
             current.push(byte);
             token_started = true;
+            // Any unquoted byte makes this a mixed/unquoted token.
+            token_style = Some(QuoteStyle::None);
         }
 
         i += 1;
@@ -107,7 +133,8 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     // Push the last token (may be empty if input was all whitespace after trim,
     // but trim_ascii above ensures the buffer is non-empty when we reach here).
     if token_started || !current.is_empty() {
-        parts.push(current);
+        let style = token_style.unwrap_or(QuoteStyle::None);
+        parts.push((current, style));
     }
 
     // Split into command and args. If parts is empty (blank input after trim),
@@ -117,8 +144,8 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     }
 
     let mut iter = parts.into_iter();
-    let command = iter.next().unwrap_or_default();
-    let args: Vec<Vec<u8>> = iter.collect();
+    let (command, _) = iter.next().unwrap_or((Vec::new(), QuoteStyle::None));
+    let args: Vec<(Vec<u8>, QuoteStyle)> = iter.collect();
 
     (command, args)
 }
@@ -156,8 +183,15 @@ pub fn parse_arg(arg: &[u8]) -> Arg {
 mod tests {
     use super::*;
 
-    // Helper: split and compare command + args as byte slices.
+    // Helper: split and return command + arg bytes (quoting metadata stripped).
     fn split(input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let (cmd, args) = split_command_and_args(input);
+        let arg_bytes = args.into_iter().map(|(b, _)| b).collect();
+        (cmd, arg_bytes)
+    }
+
+    // Helper: split and return command + (bytes, style) pairs.
+    fn split_styled(input: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
         split_command_and_args(input)
     }
 
@@ -194,9 +228,8 @@ mod tests {
     fn test_parse_arg() {
         let arg = "/home/user".as_bytes();
         let parsed_arg = parse_arg(arg);
-        match parsed_arg {
-            Arg::Literal(bytes) => assert_eq!(bytes, arg),
-        }
+        assert_eq!(parsed_arg.as_bytes(), arg);
+        assert!(matches!(parsed_arg, Arg::Literal(_)));
     }
 
     #[test]
@@ -227,18 +260,16 @@ mod tests {
     fn test_parse_arg_empty() {
         let arg = "".as_bytes();
         let parsed_arg = parse_arg(arg);
-        match parsed_arg {
-            Arg::Literal(bytes) => assert!(bytes.is_empty()),
-        }
+        assert!(parsed_arg.as_bytes().is_empty());
+        assert!(matches!(parsed_arg, Arg::Literal(_)));
     }
 
     #[test]
     fn test_parse_arg_special_chars() {
         let arg = "file-with_special.chars".as_bytes();
         let parsed_arg = parse_arg(arg);
-        match parsed_arg {
-            Arg::Literal(bytes) => assert_eq!(bytes, arg),
-        }
+        assert_eq!(parsed_arg.as_bytes(), arg);
+        assert!(matches!(parsed_arg, Arg::Literal(_)));
     }
 
     // --- Double-quote tests ---
@@ -416,5 +447,46 @@ mod tests {
         let (command, args) = split(b"echo hello\\");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"hello".to_vec()]);
+    }
+
+    // --- QuoteStyle variant tests ---
+
+    #[test]
+    fn test_style_unquoted_is_literal() {
+        let (_, args) = split_styled(b"echo hello");
+        assert_eq!(args, vec![(b"hello".to_vec(), QuoteStyle::None)]);
+    }
+
+    #[test]
+    fn test_style_single_quoted() {
+        let (_, args) = split_styled(b"echo 'hello world'");
+        assert_eq!(args, vec![(b"hello world".to_vec(), QuoteStyle::Single)]);
+    }
+
+    #[test]
+    fn test_style_double_quoted() {
+        let (_, args) = split_styled(b"echo \"hello world\"");
+        assert_eq!(args, vec![(b"hello world".to_vec(), QuoteStyle::Double)]);
+    }
+
+    #[test]
+    fn test_style_adjacent_single_quoted_stays_single() {
+        // 'hello''world' is purely single-quoted
+        let (_, args) = split_styled(b"echo 'hello''world'");
+        assert_eq!(args, vec![(b"helloworld".to_vec(), QuoteStyle::Single)]);
+    }
+
+    #[test]
+    fn test_style_mixed_is_none() {
+        // pre"mid"post has unquoted bytes → QuoteStyle::None
+        let (_, args) = split_styled(b"echo pre\"mid\"post");
+        assert_eq!(args, vec![(b"premidpost".to_vec(), QuoteStyle::None)]);
+    }
+
+    #[test]
+    fn test_style_single_then_double_is_none() {
+        // 'a'"b" mixes single and double → QuoteStyle::None
+        let (_, args) = split_styled(b"echo 'a'\"b\"");
+        assert_eq!(args, vec![(b"ab".to_vec(), QuoteStyle::None)]);
     }
 }
