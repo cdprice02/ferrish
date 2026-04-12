@@ -26,6 +26,9 @@ pub fn parse(buffer: &[u8]) -> (Command, Args) {
 /// whitespace is preserved (not used as a delimiter). Backslash escaping inside
 /// double quotes is deferred to a follow-up issue.
 ///
+/// Outside quotes, a `\` before any character emits that character literally and
+/// consumes the backslash (e.g. `\ ` → space, `\\` → `\`).
+///
 /// Adjacent quoted and unquoted segments are concatenated into a single token.
 fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let buffer = buffer.trim_ascii();
@@ -58,6 +61,14 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
             } else {
                 current.push(byte);
             }
+        } else if byte == b'\\' {
+            // Outside any quotes: consume the backslash and emit the next byte literally.
+            // If there is no next byte (trailing backslash), consume the backslash silently.
+            if i + 1 < buffer.len() {
+                i += 1;
+                current.push(buffer[i]);
+            }
+            token_started = true;
         } else if byte == b'\'' {
             // Opening single quote — enter single-quote mode and mark token as started.
             // Even empty quotes (e.g. `''`) count as beginning a token so that a
@@ -318,5 +329,56 @@ mod tests {
         let (command, args) = split(b"echo hello''world");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
+    }
+
+    // --- Backslash-escape tests (outside quotes) ---
+
+    #[test]
+    fn test_backslash_space_literal() {
+        // echo three\ \ \ spaces → one arg: "three   spaces"
+        let (command, args) = split(b"echo three\\ \\ \\ spaces");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"three   spaces".to_vec()]);
+    }
+
+    #[test]
+    fn test_backslash_backslash() {
+        // echo hello\\world → one arg: "hello\world"
+        let (command, args) = split(b"echo hello\\\\world");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"hello\\world".to_vec()]);
+    }
+
+    #[test]
+    fn test_backslash_letter() {
+        // echo test\\nexample → one arg: "testnexample"  (backslash is consumed)
+        let (command, args) = split(b"echo test\\nexample");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"testnexample".to_vec()]);
+    }
+
+    #[test]
+    fn test_backslash_single_quote() {
+        // echo \'hello\' → one arg: "'hello'"  (quotes are made literal)
+        let (command, args) = split(b"echo \\'hello\\'");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"'hello'".to_vec()]);
+    }
+
+    #[test]
+    fn test_backslash_inside_single_quote_is_literal() {
+        // Inside single quotes, backslash is not special.
+        // echo 'back\slash' → one arg: "back\slash"
+        let (command, args) = split(b"echo 'back\\slash'");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"back\\slash".to_vec()]);
+    }
+
+    #[test]
+    fn test_trailing_backslash_consumed_silently() {
+        // A trailing backslash with no following character is silently consumed.
+        let (command, args) = split(b"echo hello\\");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"hello".to_vec()]);
     }
 }
