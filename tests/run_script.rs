@@ -79,21 +79,25 @@ fn test_run_script_empty_slice() {
 // ShellBuilder tests
 // ============================================================================
 
-/// `with_prompt` — the provided prompt string appears in `run()` output before each command.
+/// `with_prompt` — the provided prompt string appears in `run()` output once per command.
+///
+/// Two commands are fed (`echo hi` + `exit`) so the REPL loop shows the prompt twice,
+/// verifying that the prompt is printed before *each* line and not just at startup.
 #[test]
 fn test_builder_with_prompt_appears_in_output() {
     let custom_prompt = "$ ".to_string();
-    let io = MockIo::from_lines(&["exit"]);
+    // Feed two commands so the REPL prints the prompt twice.
+    let io = MockIo::from_lines(&["echo hi", "exit"]);
     let mut shell = Shell::builder()
         .with_prompt(custom_prompt.clone())
         .with_io(io);
     let _exit_code = shell.run().unwrap();
     let output = String::from_utf8_lossy(shell.io().output()).into_owned();
-    assert!(
-        output.contains(&custom_prompt),
-        "Expected prompt '{}' in output, got: {}",
-        custom_prompt,
-        output
+    let prompt_count = output.matches(custom_prompt.as_str()).count();
+    assert_eq!(
+        prompt_count, 2,
+        "Expected prompt '{}' to appear 2 times (once per command), got {prompt_count} in: {output}",
+        custom_prompt
     );
 }
 
