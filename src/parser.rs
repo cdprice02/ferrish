@@ -11,33 +11,74 @@ use crate::env::get_path_files;
 /// Parse a raw input line into a [`Command`] and its argument list.
 pub fn parse(buffer: &[u8]) -> (Command, Args) {
     let (command, args) = split_command_and_args(buffer);
-    let command = parse_command(command);
-    let args = args.into_iter().map(parse_arg).collect();
+    let command = parse_command(&command);
+    let args = args.into_iter().map(Arg::Literal).collect();
     (command, args)
 }
 
-fn split_command_and_args(buffer: &[u8]) -> (&[u8], Vec<&[u8]>) {
-    let mut parts = Vec::<&[u8]>::new();
-    let mut start = 0;
-
+/// Split the trimmed input buffer into a command token and zero or more argument tokens.
+///
+/// Handles single-quoted strings: characters inside `'...'` are treated literally —
+/// whitespace is preserved (not used as a delimiter) and backslashes have no special
+/// meaning. Adjacent quoted and unquoted segments are concatenated into a single token.
+fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let buffer = buffer.trim_ascii();
-    for (i, byte) in buffer.iter().enumerate() {
-        if byte.is_ascii_whitespace() {
-            if i - start > 0 {
-                parts.push(&buffer[start..i]);
-            }
+    let mut parts: Vec<Vec<u8>> = Vec::new();
 
-            start = i + 1;
+    let mut current: Vec<u8> = Vec::new();
+    let mut in_single_quote = false;
+    // Track whether we've started building a token (needed to emit empty tokens
+    // only when inside a quoted empty string at the word boundary — but for
+    // single-quotes the shell spec says empty quotes produce an empty argument
+    // only if they stand alone, which the concatenation logic handles naturally).
+    let mut token_started = false;
+
+    let mut i = 0;
+    while i < buffer.len() {
+        let byte = buffer[i];
+
+        if in_single_quote {
+            if byte == b'\'' {
+                // Closing quote — exit single-quote mode but stay in current token.
+                in_single_quote = false;
+            } else {
+                current.push(byte);
+            }
+        } else if byte == b'\'' {
+            // Opening single quote — enter single-quote mode and mark token as started.
+            // Even empty quotes (e.g. `''`) count as beginning a token so that a
+            // standalone `''` produces one empty argument rather than being dropped.
+            in_single_quote = true;
+            token_started = true;
+        } else if byte.is_ascii_whitespace() {
+            if token_started || !current.is_empty() {
+                parts.push(current);
+                current = Vec::new();
+                token_started = false;
+            }
+        } else {
+            current.push(byte);
+            token_started = true;
         }
-        // TODO: handle quotes
+
+        i += 1;
     }
 
-    parts.push(&buffer[start..]);
+    // Push the last token (may be empty if input was all whitespace after trim,
+    // but trim_ascii above ensures the buffer is non-empty when we reach here).
+    if token_started || !current.is_empty() {
+        parts.push(current);
+    }
 
-    let (command, args) = parts
-        .split_first()
-        .unwrap_or((parts.first().expect("at least one part"), &[]));
-    let args = args.into();
+    // Split into command and args. If parts is empty (blank input after trim),
+    // return an empty command and no args.
+    if parts.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut iter = parts.into_iter();
+    let command = iter.next().unwrap_or_default();
+    let args: Vec<Vec<u8>> = iter.collect();
 
     (command, args)
 }
@@ -75,12 +116,16 @@ pub fn parse_arg(arg: &[u8]) -> Arg {
 mod tests {
     use super::*;
 
+    // Helper: split and compare command + args as byte slices.
+    fn split(input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        split_command_and_args(input)
+    }
+
     #[test]
     fn test_split_command_and_args() {
-        let buffer = b"  ls   -la  /home/user  ";
-        let (command, args) = split_command_and_args(buffer);
+        let (command, args) = split(b"  ls   -la  /home/user  ");
         assert_eq!(command, b"ls");
-        assert_eq!(args, vec!["-la".as_bytes(), "/home/user".as_bytes()]);
+        assert_eq!(args, vec![b"-la".to_vec(), b"/home/user".to_vec()]);
     }
 
     #[test]
@@ -116,28 +161,25 @@ mod tests {
 
     #[test]
     fn test_split_command_and_args_no_args() {
-        let buffer = b"ls";
-        let (command, args) = split_command_and_args(buffer);
+        let (command, args) = split(b"ls");
         assert_eq!(command, b"ls");
         assert!(args.is_empty());
     }
 
     #[test]
     fn test_split_command_and_args_single_arg() {
-        let buffer = b"ls -la";
-        let (command, args) = split_command_and_args(buffer);
+        let (command, args) = split(b"ls -la");
         assert_eq!(command, b"ls");
-        assert_eq!(args, vec!["-la".as_bytes()]);
+        assert_eq!(args, vec![b"-la".to_vec()]);
     }
 
     #[test]
     fn test_split_command_and_args_multiple_spaces() {
-        let buffer = b"    command    arg1    arg2    arg3    ";
-        let (command, args) = split_command_and_args(buffer);
+        let (command, args) = split(b"    command    arg1    arg2    arg3    ");
         assert_eq!(command, b"command");
         assert_eq!(
             args,
-            vec!["arg1".as_bytes(), "arg2".as_bytes(), "arg3".as_bytes()]
+            vec![b"arg1".to_vec(), b"arg2".to_vec(), b"arg3".to_vec()]
         );
     }
 
@@ -157,5 +199,47 @@ mod tests {
         match parsed_arg {
             Arg::Literal(bytes) => assert_eq!(bytes, arg),
         }
+    }
+
+    // --- Single-quote tests ---
+
+    #[test]
+    fn test_single_quote_preserves_spaces() {
+        // echo 'hello    world' → one arg: "hello    world"
+        let (command, args) = split(b"echo 'hello    world'");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"hello    world".to_vec()]);
+    }
+
+    #[test]
+    fn test_single_quote_adjacent_concatenation() {
+        // echo 'hello''world' → one arg: "helloworld"
+        let (command, args) = split(b"echo 'hello''world'");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_single_quote_mixed_adjacent_concatenation() {
+        // echo hello''world → one arg: "helloworld"
+        let (command, args) = split(b"echo hello''world");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_single_quote_backslash_literal() {
+        // Inside single quotes, backslash is literal.
+        let (command, args) = split(b"echo 'back\\slash'");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"back\\slash".to_vec()]);
+    }
+
+    #[test]
+    fn test_single_quote_empty_quotes() {
+        // echo hello''world → "helloworld" (empty quotes ignored mid-token)
+        let (command, args) = split(b"echo hello''world");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"helloworld".to_vec()]);
     }
 }

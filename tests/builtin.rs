@@ -90,6 +90,43 @@ fn test_echo_collapses_multiple_spaces() {
 }
 
 // ============================================================================
+// Single-Quote Parsing Tests (issue #17)
+// ============================================================================
+
+#[test]
+fn test_echo_single_quote_preserves_spaces() {
+    // 'hello    world' should arrive as one argument with spaces intact.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo 'hello    world'")
+        .run();
+
+    result.assert_output_contains("hello    world");
+}
+
+#[test]
+fn test_echo_single_quote_adjacent_concatenation() {
+    // 'hello''world' should concatenate into a single argument "helloworld".
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo 'hello''world'")
+        .run();
+
+    result.assert_output_contains("helloworld");
+}
+
+#[test]
+fn test_echo_single_quote_mixed_adjacent_concatenation() {
+    // hello''world should concatenate into a single argument "helloworld".
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo hello''world")
+        .run();
+
+    result.assert_output_contains("helloworld");
+}
+
+// ============================================================================
 // CD Command Tests
 // ============================================================================
 
