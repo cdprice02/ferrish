@@ -3,18 +3,48 @@ use std::path::PathBuf;
 /// A list of shell command arguments.
 pub type Args = Vec<Arg>;
 
+/// The quoting context in which a shell argument was parsed.
+///
+/// Tracks whether the argument originated from a single-quoted string, a
+/// double-quoted string, or was unquoted (or had a mixed quoting context).
+/// This is used by future features: globbing is suppressed for all quoted
+/// args; variable expansion is suppressed for single-quoted args.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuoteStyle {
+    /// Argument was unquoted, or has a mixed quoting context (e.g. `pre"mid"post`).
+    None,
+    /// Argument was entirely enclosed in single quotes; all characters are literal.
+    Single,
+    /// Argument was entirely enclosed in double quotes; backslash escaping applies.
+    Double,
+}
+
 /// Represents a shell command argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
-    /// A raw byte sequence argument with no further interpretation.
+    /// A raw byte sequence that originated from unquoted or mixed-context input.
     Literal(Vec<u8>),
+    /// A byte sequence with its quoting origin preserved.
+    Quoted {
+        /// The raw byte content of the argument.
+        bytes: Vec<u8>,
+        /// The quoting context in which this argument was parsed.
+        style: QuoteStyle,
+    },
+}
+
+impl Arg {
+    /// Returns the raw bytes of this argument, regardless of quoting.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Arg::Literal(bytes) | Arg::Quoted { bytes, .. } => bytes,
+        }
+    }
 }
 
 impl std::fmt::Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Arg::Literal(bytes) => write!(f, "{}", String::from_utf8_lossy(bytes)),
-        }
+        write!(f, "{}", String::from_utf8_lossy(self.as_bytes()))
     }
 }
 
@@ -38,9 +68,7 @@ impl From<Vec<u8>> for Arg {
 
 impl From<&Arg> for PathBuf {
     fn from(val: &Arg) -> Self {
-        match val {
-            Arg::Literal(_) => PathBuf::from(val.to_string()),
-        }
+        PathBuf::from(val.to_string())
     }
 }
 
@@ -51,9 +79,8 @@ mod tests {
     #[test]
     fn test_arg_from_str() {
         let arg = Arg::from("hello");
-        match arg {
-            Arg::Literal(bytes) => assert_eq!(bytes, b"hello"),
-        }
+        assert_eq!(arg.as_bytes(), b"hello");
+        assert!(matches!(arg, Arg::Literal(_)));
     }
 
     #[test]
@@ -76,4 +103,22 @@ mod tests {
         assert_eq!(pathbuf, PathBuf::from("/path/to/file"));
     }
 
+    #[test]
+    fn test_quoted_single_as_bytes() {
+        let arg = Arg::Quoted {
+            bytes: b"hello".to_vec(),
+            style: QuoteStyle::Single,
+        };
+        assert_eq!(arg.as_bytes(), b"hello");
+        assert_eq!(arg.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_quoted_double_as_bytes() {
+        let arg = Arg::Quoted {
+            bytes: b"world".to_vec(),
+            style: QuoteStyle::Double,
+        };
+        assert_eq!(arg.as_bytes(), b"world");
+    }
 }
