@@ -15,7 +15,7 @@ Orchestrates end-to-end resolution of all open issues in a milestone. You are th
 
 Use `mcp__plugin_github_github__search_issues` with query:
 ```
-repo:cdprice02/ferrish is:open milestone:"<milestone title>"
+repo:cdprice02/ferrish is:open is:issue milestone:"<milestone title>"
 ```
 
 List every open issue. For each one note: title, labels, any mentioned dependencies in the body (e.g., "depends on #N", "blocked by #N", "after #N").

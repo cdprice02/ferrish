@@ -29,7 +29,7 @@ If the issue is genuinely ambiguous after reading it, ask one focused question b
 ### 3. Create the worktree
 
 ```bash
-git worktree add .claude/worktrees/issue-<N> -b <branch-name>
+git worktree add .claude/worktrees/issue-<N> -b <branch-name> origin/main
 ```
 
 All subsequent edits and commands happen inside that worktree directory.
@@ -57,7 +57,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 Do not push a failing build. Clippy warnings are CI failures — `-D warnings` is enforced.
 
-One important constraint on tests: never spawn the shell binary as a subprocess in tests. `cargo-tarpaulin` cannot trace across process boundaries, and `--follow-exec` is blocked by seccomp in GitHub Actions. Call library code directly via `ShellTest` or unit test the function in-process.
+One important constraint on tests: prefer in-process tests for normal implementation and verification. `cargo-tarpaulin` cannot trace across process boundaries, and `--follow-exec` is blocked by seccomp in GitHub Actions, so coverage-oriented tests should call library code directly via `ShellTest` or unit test functions in-process. If an issue truly requires end-to-end validation of real shell process behavior, a separate subprocess-based test is allowed — but treat it as explicitly non-coverage verification rather than the default path.
 
 ### 6. Commit
 
