@@ -82,7 +82,7 @@ fn execute_builtin(
                         Ok(n) => ExitCode(n),
                         Err(_) => {
                             writeln!(io.err_writer(), "exit: {}: numeric argument required", s)?;
-                            return Ok(Some(ExitCode(1)));
+                            return Ok(Some(ExitCode::FAILURE));
                         }
                     }
                 }
