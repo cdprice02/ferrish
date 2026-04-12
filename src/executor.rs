@@ -198,14 +198,12 @@ fn execute_executable(
     let status = child.wait().map_err(ShellError::ExecutionFailed)?;
 
     // Collect thread results; propagate the first I/O error encountered.
-    let join_err = |_| std::io::Error::other("I/O thread panicked");
-
     if let Some(handle) = stdout_thread {
-        let bytes = handle.join().map_err(join_err).map_err(ShellError::ExecutionFailed)??;
+        let bytes = join_io_thread(handle, "stdout")?;
         io.out_writer().write_all(&bytes)?;
     }
     if let Some(handle) = stderr_thread {
-        let bytes = handle.join().map_err(join_err).map_err(ShellError::ExecutionFailed)??;
+        let bytes = join_io_thread(handle, "stderr")?;
         io.err_writer().write_all(&bytes)?;
     }
 
@@ -214,6 +212,23 @@ fn execute_executable(
     }
 
     Ok(None)
+}
+
+/// Join an I/O drain thread and convert both join-failure and I/O errors into
+/// a non-fatal [`ShellError::Io`].  `stream` names the pipe ("stdout"/"stderr")
+/// and is included in the panic-message for easier debugging.
+fn join_io_thread(
+    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> ShellResult<Vec<u8>> {
+    handle
+        .join()
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::other(format!(
+                "{stream} I/O thread panicked"
+            )))
+        })
+        .map_err(ShellError::Io)
 }
 
 #[cfg(test)]
@@ -318,6 +333,27 @@ mod tests {
         assert!(
             output.contains(bin_path.to_str().unwrap()),
             "path not in output: {output}"
+        );
+    }
+
+    #[test]
+    fn test_join_io_thread_panic_is_non_fatal_io_error() {
+        // Verify that a panicking I/O thread produces a non-fatal ShellError::Io
+        // that includes the stream name, rather than propagating a process panic.
+        let handle = std::thread::spawn(|| -> std::io::Result<Vec<u8>> {
+            panic!("simulated OOM");
+        });
+        // Suppress the panic output from the child thread in test output.
+        let result = join_io_thread(handle, "stdout");
+        let err = result.expect_err("expected Err from panicking thread");
+        assert!(!err.is_fatal(), "join panic must not be fatal");
+        assert!(
+            matches!(err, ShellError::Io(_)),
+            "expected ShellError::Io, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("stdout"),
+            "error message should name the stream: {err}"
         );
     }
 }
