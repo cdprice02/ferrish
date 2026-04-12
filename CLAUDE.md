@@ -37,6 +37,11 @@ Input flows through: **Shell** → **Parser** → **Executor** → **BuiltIn | E
 - `src/command/executable.rs` — Wraps an external binary found on PATH
 - `src/error.rs` — `ShellError` enum; distinguishes fatal errors (process spawn/wait failures) from recoverable ones (command not found, bad path)
 - `src/io.rs` — `ShellIo` trait with `StandardIo` (real I/O) and `MockIo` (testing); this abstraction is what makes unit tests possible without spawning a process
+- `src/ctx.rs` — `ShellCtx` (runtime state: cwd, home dir, config) and `ShellConfig` (prompt, history settings)
+- `src/arg.rs` — `Arg` enum representing a parsed command argument (currently a `Literal` byte-sequence variant)
+- `src/env.rs` — PATH resolution, home directory lookup, and current-directory helpers
+- `src/exit.rs` — `ExitCode` newtype wrapping `u8`; constants `SUCCESS`/`FAILURE`, conversions to `i32` and `std::process::ExitCode`
+- `src/fs.rs` — path resolution: expands `~`, resolves relative paths against cwd, soft-canonicalizes without requiring existence
 
 ## Testing Strategy
 
@@ -50,6 +55,6 @@ The `ShellTest` builder in `harness.rs` is the primary integration test interfac
 ## Key Conventions
 
 - **File-based modules** — no `mod.rs`; each module is a standalone `.rs` file
-- **Error reporting** — miette for user-facing errors with span context; `thiserror` for internal error types
+- **Error reporting** — `thiserror` derives `Error` for `ShellError` in `src/error.rs`; `anyhow` for `Shell::run()` return type and error context
 - **REPL responsiveness** — lex/parse must complete in <100ms for typical input
 - **State** — keep shell state (env vars, working dir) centralized and test scoping/isolation explicitly
