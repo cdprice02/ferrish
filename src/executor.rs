@@ -74,11 +74,19 @@ fn execute_builtin(
 ) -> ShellResult<Option<ExitCode>> {
     match builtin.name() {
         BuiltInName::Exit => {
-            let code = args
-                .first()
-                .and_then(|a| a.to_string().parse::<u8>().ok())
-                .map(ExitCode)
-                .unwrap_or(ExitCode::SUCCESS);
+            let code = match args.first() {
+                None => ExitCode::SUCCESS,
+                Some(arg) => {
+                    let s = arg.to_string();
+                    match s.parse::<u8>() {
+                        Ok(n) => ExitCode(n),
+                        Err(_) => {
+                            writeln!(io.err_writer(), "exit: {}: numeric argument required", s)?;
+                            return Ok(Some(ExitCode::FAILURE));
+                        }
+                    }
+                }
+            };
             return Ok(Some(code));
         }
         BuiltInName::Cd => execute_cd(args, io, ctx)?,
