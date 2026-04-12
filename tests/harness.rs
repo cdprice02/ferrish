@@ -37,6 +37,7 @@ impl ShellTest {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_isolated_home(mut self) -> Self {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let home = temp_dir.path().to_path_buf();
@@ -123,6 +124,7 @@ pub struct TestResult {
 }
 
 impl TestResult {
+    #[allow(dead_code)]
     pub fn output(&self) -> &str {
         &self.output
     }
