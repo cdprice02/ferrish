@@ -20,13 +20,20 @@ pub fn parse(buffer: &[u8]) -> (Command, Args) {
 ///
 /// Handles single-quoted strings: characters inside `'...'` are treated literally —
 /// whitespace is preserved (not used as a delimiter) and backslashes have no special
-/// meaning. Adjacent quoted and unquoted segments are concatenated into a single token.
+/// meaning.
+///
+/// Handles double-quoted strings: characters inside `"..."` are treated literally —
+/// whitespace is preserved (not used as a delimiter). Backslash escaping inside
+/// double quotes is deferred to a follow-up issue.
+///
+/// Adjacent quoted and unquoted segments are concatenated into a single token.
 fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let buffer = buffer.trim_ascii();
     let mut parts: Vec<Vec<u8>> = Vec::new();
 
     let mut current: Vec<u8> = Vec::new();
     let mut in_single_quote = false;
+    let mut in_double_quote = false;
     // Track whether we've started building a token (needed to emit empty tokens
     // only when inside a quoted empty string at the word boundary — but for
     // single-quotes the shell spec says empty quotes produce an empty argument
@@ -44,11 +51,23 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
             } else {
                 current.push(byte);
             }
+        } else if in_double_quote {
+            if byte == b'"' {
+                // Closing double quote — exit double-quote mode but stay in current token.
+                in_double_quote = false;
+            } else {
+                current.push(byte);
+            }
         } else if byte == b'\'' {
             // Opening single quote — enter single-quote mode and mark token as started.
             // Even empty quotes (e.g. `''`) count as beginning a token so that a
             // standalone `''` produces one empty argument rather than being dropped.
             in_single_quote = true;
+            token_started = true;
+        } else if byte == b'"' {
+            // Opening double quote — enter double-quote mode and mark token as started.
+            // Same empty-quote semantics as single quotes.
+            in_double_quote = true;
             token_started = true;
         } else if byte.is_ascii_whitespace() {
             if token_started || !current.is_empty() {
@@ -199,6 +218,64 @@ mod tests {
         match parsed_arg {
             Arg::Literal(bytes) => assert_eq!(bytes, arg),
         }
+    }
+
+    // --- Double-quote tests ---
+
+    #[test]
+    fn test_double_quote_preserves_spaces() {
+        // echo "hello    world" → one arg: "hello    world"
+        let (command, args) = split(b"echo \"hello    world\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"hello    world".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_adjacent_concatenation() {
+        // echo "hello""world" → one arg: "helloworld"
+        let (command, args) = split(b"echo \"hello\"\"world\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_mixed_adjacent_concatenation() {
+        // echo hello"world" → one arg: "helloworld"
+        let (command, args) = split(b"echo hello\"world\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_empty_quotes() {
+        // echo "" → one empty arg
+        let (command, args) = split(b"echo \"\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_multiple_args() {
+        // echo "foo bar" "baz qux" → two args: "foo bar", "baz qux"
+        let (command, args) = split(b"echo \"foo bar\" \"baz qux\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"foo bar".to_vec(), b"baz qux".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_with_single_quote_inside() {
+        // Single quotes inside double quotes are literal.
+        let (command, args) = split(b"echo \"it's\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"it's".to_vec()]);
+    }
+
+    #[test]
+    fn test_double_quote_unquoted_mixed() {
+        // echo pre"mid"post → one arg: "premidpost"
+        let (command, args) = split(b"echo pre\"mid\"post");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"premidpost".to_vec()]);
     }
 
     // --- Single-quote tests ---
