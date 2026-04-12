@@ -22,9 +22,9 @@ pub fn parse(buffer: &[u8]) -> (Command, Args) {
 /// whitespace is preserved (not used as a delimiter) and backslashes have no special
 /// meaning.
 ///
-/// Handles double-quoted strings: characters inside `"..."` are treated literally —
-/// whitespace is preserved (not used as a delimiter). Backslash escaping inside
-/// double quotes is deferred to a follow-up issue.
+/// Handles double-quoted strings: characters inside `"..."` are treated mostly literally —
+/// whitespace is preserved (not used as a delimiter). Inside double quotes, `\\` → `\`
+/// and `\"` → `"`; all other `\X` sequences preserve the backslash literally.
 ///
 /// Outside quotes, a `\` before any character emits that character literally and
 /// consumes the backslash (e.g. `\ ` → space, `\\` → `\`).
@@ -58,6 +58,16 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
             if byte == b'"' {
                 // Closing double quote — exit double-quote mode but stay in current token.
                 in_double_quote = false;
+            } else if byte == b'\\' && i + 1 < buffer.len() {
+                // Inside double quotes, backslash only escapes `"` and `\`.
+                // For all other characters, the backslash is preserved literally.
+                let next = buffer[i + 1];
+                if next == b'"' || next == b'\\' {
+                    i += 1;
+                    current.push(next);
+                } else {
+                    current.push(b'\\');
+                }
             } else {
                 current.push(byte);
             }
@@ -287,6 +297,32 @@ mod tests {
         let (command, args) = split(b"echo pre\"mid\"post");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"premidpost".to_vec()]);
+    }
+
+    // --- Backslash-in-double-quote tests ---
+
+    #[test]
+    fn test_dquote_backslash_escapes_backslash() {
+        // echo "A \\ escapes itself" → A \ escapes itself
+        let (command, args) = split(b"echo \"A \\\\ escapes itself\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"A \\ escapes itself".to_vec()]);
+    }
+
+    #[test]
+    fn test_dquote_backslash_escapes_dquote() {
+        // echo "A \" inside double quotes" → A " inside double quotes
+        let (command, args) = split(b"echo \"A \\\" inside double quotes\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"A \" inside double quotes".to_vec()]);
+    }
+
+    #[test]
+    fn test_dquote_backslash_non_special_preserved() {
+        // echo "\n" → \n (backslash preserved before non-special char)
+        let (command, args) = split(b"echo \"\\n\"");
+        assert_eq!(command, b"echo");
+        assert_eq!(args, vec![b"\\n".to_vec()]);
     }
 
     // --- Single-quote tests ---
