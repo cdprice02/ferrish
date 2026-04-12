@@ -198,12 +198,14 @@ fn execute_executable(
     let status = child.wait().map_err(ShellError::ExecutionFailed)?;
 
     // Collect thread results; propagate the first I/O error encountered.
+    let join_err = |_| std::io::Error::other("I/O thread panicked");
+
     if let Some(handle) = stdout_thread {
-        let bytes = handle.join().expect("stdout thread panicked")?;
+        let bytes = handle.join().map_err(join_err).map_err(ShellError::ExecutionFailed)??;
         io.out_writer().write_all(&bytes)?;
     }
     if let Some(handle) = stderr_thread {
-        let bytes = handle.join().expect("stderr thread panicked")?;
+        let bytes = handle.join().map_err(join_err).map_err(ShellError::ExecutionFailed)??;
         io.err_writer().write_all(&bytes)?;
     }
 
