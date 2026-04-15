@@ -221,18 +221,14 @@ fn test_stderr_redirect_overwrites_existing_file() {
     );
 }
 
-/// A `2>` on one command should not affect stdout of a subsequent command.
-/// Stdout of the command following the stderr-redirect should still reach the terminal.
+/// `2>` captures a builtin's stderr output to a file and not to the terminal.
 #[test]
-fn test_stderr_redirect_does_not_affect_subsequent_stdout() {
+fn test_stderr_redirect_captures_builtin_error_to_file() {
     let result = ShellTest::new()
         .with_isolated_home()
-        .script("exit notanumber 2> err.txt\necho after")
+        .script("exit notanumber 2> err.txt")
         .run();
 
-    // `exit notanumber` exits with failure code, so `echo after` won't run.
-    // Instead verify: the `2>` file was created with the error, and terminal
-    // stderr from the `exit` error was empty (it went to the file).
     assert!(
         !result.error().contains("numeric argument required"),
         "error written with 2> must not appear on terminal stderr"
@@ -245,4 +241,28 @@ fn test_stderr_redirect_does_not_affect_subsequent_stdout() {
         contents.contains("numeric argument required"),
         "error should be in the redirect file: {contents}"
     );
+}
+
+/// A `2>` on one command does not affect stdout of a subsequent command.
+/// Uses `cat /nonexistent` which writes to stderr but is non-fatal (the shell
+/// continues after reporting the non-zero exit), so `echo after` still runs.
+#[cfg(unix)]
+#[test]
+fn test_stderr_redirect_does_not_affect_subsequent_stdout() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("cat /nonexistent 2> err.txt\necho after")
+        .run();
+
+    // `echo after` must have run and reached terminal stdout.
+    assert!(
+        result.output_contains("after"),
+        "stdout of subsequent command must reach the terminal"
+    );
+
+    // cat's stderr should be in the file, not the terminal.
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("err.txt"))
+        .expect("err.txt should exist");
+    assert!(!contents.is_empty(), "cat's stderr should have been captured to file");
 }

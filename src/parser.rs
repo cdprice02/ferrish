@@ -92,6 +92,10 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
                         String::from_utf8_lossy(&target_bytes).as_ref(),
                     );
                     stderr_redirect = Some(StderrRedirect::new(target));
+                } else {
+                    // No filename follows the operator — keep it as a literal
+                    // argument rather than silently dropping it.
+                    out_args.push((bytes, style));
                 }
                 continue;
             }
@@ -608,6 +612,18 @@ mod tests {
             args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
             vec![">"],
             "trailing `>` should be kept as a literal arg"
+        );
+    }
+
+    #[test]
+    fn test_parse_stderr_redirect_trailing_operator_kept_as_arg() {
+        // A trailing `2>` with no following filename should be preserved as a literal argument.
+        let (_, args, _, stderr_redirect) = parse(b"echo 2>");
+        assert!(stderr_redirect.is_none(), "no redirect target means no StderrRedirect");
+        assert_eq!(
+            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec!["2>"],
+            "trailing `2>` should be kept as a literal arg"
         );
     }
 
