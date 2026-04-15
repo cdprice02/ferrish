@@ -76,8 +76,10 @@ git push
 
 ### 7. Reply to addressed threads
 
-For each resolved mechanical comment, reply via `mcp__plugin_github_github__add_reply_to_pull_request_comment` with a one-line summary:
-> Fixed — <what changed in one sentence>
+For each resolved mechanical comment, reply via `mcp__plugin_github_github__add_reply_to_pull_request_comment` with a one-line summary that includes the commit link:
+> Fixed in <commit SHA short> — <what changed in one sentence>
+
+GitHub auto-links short SHAs in PR comments. Use the short SHA of the commit you just pushed (first 7 characters).
 
 For design questions where the original approach is sound:
 > Keeping the current approach because <reason>. <Optional: what would need to change for the alternative to be preferable.>
