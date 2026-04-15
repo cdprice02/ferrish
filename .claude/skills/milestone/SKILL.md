@@ -11,9 +11,19 @@ Orchestrates end-to-end resolution of all open issues in a milestone. You are th
 
 - Owner: `cdprice02`, Repo: `ferrish`, Base branch: `main`
 
+## Recommended workflow
+
+Run `/triage` before starting a milestone burndown to ensure all issues are labeled, scoped to the right milestone, and free of unresolved duplicates. Milestone assumes issues are already organized — it does not re-triage mid-run.
+
+For a PR with a large volume of design-level review comments, consider pausing the monitoring loop and running `/pr-review <N>` directly for more thorough handling before resuming.
+
+## Tool priority
+
+Use `mcp__plugin_github_github__*` for all GitHub operations (issue listing, PR status, CI checks, review comment replies). Fall back to `gh` CLI via Bash only when a specific operation is unavailable through the MCP.
+
 ## Phase 1: Survey the milestone
 
-Use `mcp__plugin_github_github__search_issues` with query:
+Use `mcp__plugin_github_github__list_issues` with a milestone filter, or `mcp__plugin_github_github__search_issues` with query:
 ```
 repo:cdprice02/ferrish is:open is:issue milestone:"<milestone title>"
 ```
@@ -40,34 +50,46 @@ Deliver a PR URL. Do not return a plan.
 
 ## Phase 3: Monitor and iterate
 
-After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (method: `get_check_runs` and `get_review_comments`).
+After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (methods: `get`, `get_check_runs`, `get_review_comments`).
 
 For each PR:
 
 | State | Action |
 |-------|--------|
-| CI passing, no review comments | Nothing to do — wait for merge |
-| CI failing | Read the failure output, fix it in the worktree, push again |
+| CI pending / running | Wait; revisit next cycle |
+| CI failing | Read failure output via MCP, fix in the worktree, push again |
 | Review comments present | Classify each comment (see below), address mechanical ones |
-| Merge conflict | Rebase the branch onto main and re-verify |
+| Merge conflict | Rebase the branch onto main, re-verify, push |
+| CI passing, review pending | Do nothing — awaiting code owner approval. Do not merge. |
+| CI passing, review approved | Surface to user: "PR #N is approved and ready for you to merge." |
 
 ### Classifying review comments
 
-- **Mechanical** (naming, formatting, missing test, small refactor): fix it, push, reply to the thread with a one-line summary of what changed
-- **Design question** (alternative approach, architectural concern): reply with a reasoned response; if you're confident in the original approach, defend it briefly; if the reviewer raises a valid point, update the code
+- **Mechanical** (naming, formatting, missing test, small refactor): fix it, push, reply to the thread via `mcp__plugin_github_github__add_reply_to_pull_request_comment` with a one-line summary of what changed
+- **Design question** (alternative approach, architectural concern): reply with a reasoned response via MCP; if you're confident in the original approach, defend it briefly; if the reviewer raises a valid point, update the code
 - **Needs human judgment** (product decision, scope change, security concern): surface it to the user with the PR number and comment text
-
-Reply to addressed threads via `mcp__plugin_github_github__add_reply_to_pull_request_comment`.
 
 ## Phase 4: Unblock the next wave
 
 Once a blocking issue's PR is merged, check the dependency map for issues that were waiting on it. Add them to the active work queue and spawn their subagents.
 
-Use `mcp__plugin_github_github__search_issues` to re-query the milestone periodically and confirm what's still open.
+Use `mcp__plugin_github_github__list_issues` to re-query the milestone periodically and confirm what's still open.
 
 ## Phase 5: Done
 
-When all issues in the milestone have closed PRs (or explicit escalations), report a summary:
+When all remaining open PRs are green and awaiting review, stop and report:
+
+```
+All implementation work is complete. The following PRs are green and awaiting your approval:
+- PR #N — <title> — <url>
+- PR #M — <title> — <url>
+
+Merge these at your discretion. Issues will close automatically via the "Closes #N" link.
+```
+
+Do not poll indefinitely after reaching this state.
+
+When all issues in the milestone have closed PRs (or explicit escalations), report a final summary:
 - Issues implemented: list with PR URLs
 - Issues escalated: list with reason
 - Issues still open: list with current blocker

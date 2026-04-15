@@ -12,6 +12,10 @@ End-to-end implementation of a single ferrish issue. The only output that matter
 - Owner: `cdprice02`, Repo: `ferrish`, Base branch: `main`
 - Worktrees: `.claude/worktrees/` (gitignored)
 
+## Tool priority
+
+Use `mcp__plugin_github_github__*` for all GitHub operations (reading issues, creating PRs, checking CI status, replying to review threads). Fall back to `gh` CLI via Bash only when a specific operation is unavailable through the MCP.
+
 ## Steps
 
 ### 1. Read the issue
@@ -84,6 +88,14 @@ Then open the PR via `mcp__plugin_github_github__create_pull_request`:
 - `body`: one-paragraph description of the approach, followed by `Closes #<N>`
 - `base`: `main`
 
+GitHub will automatically request a review from the code owner (via `.github/CODEOWNERS`). Do not manually assign reviewers.
+
 ### 8. Done
 
-Return the PR URL. That's the deliverable.
+Return the PR URL and state that it is open and awaiting code owner review. The skill's job ends here — do not merge.
+
+Example:
+```
+PR #N is open and awaiting code owner review.
+https://github.com/cdprice02/ferrish/pull/N
+```
