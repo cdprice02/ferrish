@@ -74,18 +74,26 @@ fix: address review comments on PR #N
 git push
 ```
 
-### 7. Reply to addressed threads
+### 7. Reply to addressed threads and resolve them
 
 For each resolved mechanical comment, reply via `mcp__plugin_github_github__add_reply_to_pull_request_comment` with a one-line summary that includes the commit link:
 > Fixed in <commit SHA short> — <what changed in one sentence>
 
 GitHub auto-links short SHAs in PR comments. Use the short SHA of the commit you just pushed (first 7 characters).
 
-For design questions where the original approach is sound:
+Then resolve the thread. The thread's `node_id` is returned by `get_review_comments` — use it with the GraphQL API:
+
+```bash
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread node_id>"}) { thread { isResolved } } }'
+```
+
+For design questions where the original approach is sound, reply and resolve:
 > Keeping the current approach because <reason>. <Optional: what would need to change for the alternative to be preferable.>
 
-For design questions where the reviewer's point is valid and code was updated:
+For design questions where the reviewer's point is valid and code was updated, reply and resolve:
 > Good call — updated in <commit SHA short>. <One sentence on what changed.>
+
+**Do not resolve** threads for `Needs human judgment` items or for design replies that explicitly invite further discussion — leave those open for the conversation to continue.
 
 ### 8. Surface judgment calls
 
