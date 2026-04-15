@@ -27,8 +27,8 @@ Use `mcp__plugin_github_github__*` for all GitHub reads and writes. Fall back to
 ### 1. Fetch current state (run in parallel)
 
 - **Open issues:** `mcp__plugin_github_github__list_issues` (state: open)
-- **Existing labels:** `mcp__plugin_github_github__get_label` for each known label — `bug`, `enhancement`, `chore`, `docs`, `refactor`
-- **Open milestones:** `mcp__plugin_github_github__list_issues` grouped by milestone, or `gh milestone list` as fallback
+- **All labels:** `gh label list` via Bash — fetches the full set of repo-defined labels, not just a hard-coded subset. Use this as the label universe when proposing assignments.
+- **Open milestones:** `gh milestone list` via Bash — lists milestones directly, including those with zero open issues which `list_issues` would miss.
 
 ### 2. Read each issue
 

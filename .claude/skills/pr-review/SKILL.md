@@ -22,10 +22,10 @@ Use `mcp__plugin_github_github__*` for all GitHub reads and writes (fetching PR 
 
 Use `mcp__plugin_github_github__pull_request_read`:
 - `get` — PR metadata, current branch name, head SHA
-- `get_review_comments` — all inline review comments
+- `get_review_comments` — all inline review threads; each thread includes `is_resolved` — skip threads where `is_resolved: true`
 - `get_reviews` — top-level review summaries (approved, changes requested, commented)
 
-Focus on unresolved threads. Skip comments that are already resolved or that have been replied to by the author.
+Focus on unresolved threads (`is_resolved: false`). Skip threads that are already resolved or where the author has already replied with a fix.
 
 ### 2. Classify each comment
 
@@ -42,7 +42,7 @@ When in doubt between mechanical and design, treat it as design — don't silent
 Check out the PR branch in an isolated worktree:
 
 ```bash
-git worktree add .claude/worktrees/pr-<N>-review origin/<branch-name>
+git worktree add .claude/worktrees/pr-<N>-review -b pr-<N>-review --track origin/<branch-name>
 ```
 
 All edits and verification commands run inside that worktree.

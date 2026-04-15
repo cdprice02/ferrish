@@ -50,7 +50,7 @@ Deliver a PR URL. Do not return a plan.
 
 ## Phase 3: Monitor and iterate
 
-After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (methods: `get`, `get_check_runs`, `get_review_comments`).
+After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (methods: `get`, `get_check_runs`, `get_review_comments`, `get_reviews`). Use `get_reviews` to determine whether a PR is approved, has changes requested, or is still awaiting review.
 
 For each PR:
 
@@ -61,7 +61,7 @@ For each PR:
 | Review comments present | Classify each comment (see below), address mechanical ones |
 | Merge conflict | Rebase the branch onto main, re-verify, push |
 | CI passing, review pending | Do nothing — awaiting code owner approval. Do not merge. |
-| CI passing, review approved | Surface to user: "PR #N is approved and ready for you to merge." |
+| CI passing, review approved | Surface to user: "PR #N has been approved and is ready for you to merge." |
 
 ### Classifying review comments
 
@@ -80,11 +80,11 @@ Use `mcp__plugin_github_github__list_issues` to re-query the milestone periodica
 When all remaining open PRs are green and awaiting review, stop and report:
 
 ```
-All implementation work is complete. The following PRs are green and awaiting your approval:
+All implementation work is complete. The following PRs are green and awaiting code owner approval:
 - PR #N — <title> — <url>
 - PR #M — <title> — <url>
 
-Merge these at your discretion. Issues will close automatically via the "Closes #N" link.
+Merge these at your discretion once approved. Issues will close automatically via the "Closes #N" link.
 ```
 
 Do not poll indefinitely after reaching this state.
