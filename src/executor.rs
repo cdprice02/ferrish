@@ -13,7 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
-    redirect::Redirect,
+    redirect::{Redirect, StderrRedirect},
 };
 
 enum CommandKind {
@@ -55,7 +55,9 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
 ///
 /// When `redirect` is `Some`, the command's standard output is written to the
 /// named file (creating or overwriting it) instead of the shell's normal
-/// stdout.  Standard error always goes to the shell's stderr stream.
+/// stdout.  When `stderr_redirect` is `Some`, the command's standard error is
+/// written to the named file instead of the shell's normal stderr.  Either,
+/// both, or neither redirect may be present independently.
 ///
 /// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
 pub fn execute(
@@ -64,20 +66,46 @@ pub fn execute(
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
     redirect: Option<Redirect>,
+    stderr_redirect: Option<StderrRedirect>,
 ) -> ShellResult<Option<ExitCode>> {
-    if let Some(ref redir) = redirect {
-        // Resolve the redirect target path relative to the current working directory.
+    // Open the stdout redirect file if requested.
+    let mut stdout_file: Option<std::fs::File> = if let Some(ref redir) = redirect {
         let target_path = if redir.target.is_absolute() {
             redir.target.clone()
         } else {
             ctx.cwd.join(&redir.target)
         };
-
-        let mut file = std::fs::File::create(&target_path).map_err(ShellError::Io)?;
-        execute_with_writers(command, args, &mut file, io.err_writer(), ctx)
+        Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
     } else {
-        let (out, err) = io.writers();
-        execute_with_writers(command, args, out, err, ctx)
+        None
+    };
+
+    // Open the stderr redirect file if requested.
+    let mut stderr_file: Option<std::fs::File> = if let Some(ref redir) = stderr_redirect {
+        let target_path = if redir.target.is_absolute() {
+            redir.target.clone()
+        } else {
+            ctx.cwd.join(&redir.target)
+        };
+        Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
+    } else {
+        None
+    };
+
+    match (stdout_file.as_mut(), stderr_file.as_mut()) {
+        (Some(out_f), Some(err_f)) => {
+            execute_with_writers(command, args, out_f, err_f, ctx)
+        }
+        (Some(out_f), None) => {
+            execute_with_writers(command, args, out_f, io.err_writer(), ctx)
+        }
+        (None, Some(err_f)) => {
+            execute_with_writers(command, args, io.out_writer(), err_f, ctx)
+        }
+        (None, None) => {
+            let (out, err) = io.writers();
+            execute_with_writers(command, args, out, err, ctx)
+        }
     }
 }
 
@@ -298,6 +326,7 @@ mod tests {
             io,
             ctx,
             None,
+            None,
         )
     }
 
@@ -409,12 +438,36 @@ mod tests {
             &mut io,
             &mut ctx,
             redir,
+            None,
         );
         assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
         // stdout (io.output) should be empty — echo went to the file.
         assert_eq!(io.output(), b"", "terminal stdout should be empty");
         let contents = std::fs::read_to_string(&target).expect("redirect file");
         assert_eq!(contents, "hello\n");
+    }
+
+    #[test]
+    fn test_execute_with_stderr_redirect_writes_to_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let err_target = dir.path().join("err.txt");
+        let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
+        let mut io = MockIo::empty();
+        // exit with invalid argument writes to stderr
+        let stderr_redir = Some(crate::redirect::StderrRedirect::new(err_target.clone()));
+        let result = execute(
+            Command::BuiltIn(BuiltInCommand::new(BuiltInName::Exit)),
+            vec![Arg::from("notanumber")],
+            &mut io,
+            &mut ctx,
+            None,
+            stderr_redir,
+        );
+        assert!(result.is_ok(), "execute with stderr redirect should succeed: {result:?}");
+        // io.error() (terminal stderr) should be empty — error went to the file.
+        assert_eq!(io.error(), b"", "terminal stderr should be empty");
+        let contents = std::fs::read_to_string(&err_target).expect("stderr redirect file");
+        assert!(contents.contains("numeric argument required"), "expected error in file: {contents}");
     }
 
     #[test]
