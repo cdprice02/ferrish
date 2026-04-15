@@ -13,6 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
+    redirect::Redirect,
 };
 
 enum CommandKind {
@@ -52,16 +53,48 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
 
 /// Dispatch and execute a parsed command, returning an optional exit code.
 ///
+/// When `redirect` is `Some`, the command's standard output is written to the
+/// named file (creating or overwriting it) instead of the shell's normal
+/// stdout.  Standard error always goes to the shell's stderr stream.
+///
 /// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
 pub fn execute(
     command: Command,
     args: Args,
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
+    redirect: Option<Redirect>,
+) -> ShellResult<Option<ExitCode>> {
+    if let Some(ref redir) = redirect {
+        // Resolve the redirect target path relative to the current working directory.
+        let target_path = if std::path::Path::new(&redir.target).is_absolute() {
+            PathBuf::from(&redir.target)
+        } else {
+            ctx.cwd.join(&redir.target)
+        };
+
+        let mut file = std::fs::File::create(&target_path).map_err(ShellError::Io)?;
+        execute_with_writers(command, args, &mut file, io.err_writer(), ctx)
+    } else {
+        let (out, err) = io.writers();
+        execute_with_writers(command, args, out, err, ctx)
+    }
+}
+
+/// Core dispatch: all output goes to the provided `out` and `err` writers.
+///
+/// This separation makes it possible to redirect stdout to a file while keeping
+/// stderr on the terminal without changing the `ShellIo` abstraction.
+fn execute_with_writers(
+    command: Command,
+    args: Args,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     match command {
-        Command::BuiltIn(builtin) => execute_builtin(builtin, args, io, ctx),
-        Command::Executable(executable) => execute_executable(executable, args, io, ctx),
+        Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
+        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
         Command::Unrecognized(_) => Err(ShellError::CommandNotFound),
     }
 }
@@ -69,7 +102,8 @@ pub fn execute(
 fn execute_builtin(
     builtin: BuiltInCommand,
     args: Args,
-    io: &mut impl ShellIo,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     match builtin.name() {
@@ -81,7 +115,7 @@ fn execute_builtin(
                     match s.parse::<u8>() {
                         Ok(n) => ExitCode(n),
                         Err(_) => {
-                            writeln!(io.err_writer(), "exit: {}: numeric argument required", s)?;
+                            writeln!(err, "exit: {}: numeric argument required", s)?;
                             return Ok(Some(ExitCode::FAILURE));
                         }
                     }
@@ -89,16 +123,16 @@ fn execute_builtin(
             };
             return Ok(Some(code));
         }
-        BuiltInName::Cd => execute_cd(args, io, ctx)?,
-        BuiltInName::Echo => execute_echo(args, io)?,
-        BuiltInName::Type => execute_type(args, io)?,
-        BuiltInName::Pwd => execute_pwd(args, io, ctx)?,
+        BuiltInName::Cd => execute_cd(args, ctx)?,
+        BuiltInName::Echo => execute_echo(args, out)?,
+        BuiltInName::Type => execute_type(args, out)?,
+        BuiltInName::Pwd => execute_pwd(args, out, ctx)?,
     }
 
     Ok(None)
 }
 
-fn execute_cd(args: Args, _io: &mut impl ShellIo, ctx: &mut ShellCtx) -> ShellResult<()> {
+fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
     let default_target = Arg::from(b"~".as_slice());
     let target = args.first().unwrap_or(&default_target);
     let new_dir = fs::resolve_path(&target.into(), ctx.home_dir.as_deref(), &ctx.cwd)?;
@@ -118,9 +152,9 @@ fn execute_cd(args: Args, _io: &mut impl ShellIo, ctx: &mut ShellCtx) -> ShellRe
     Ok(())
 }
 
-fn execute_echo(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
+fn execute_echo(args: Args, out: &mut dyn std::io::Write) -> ShellResult<()> {
     writeln!(
-        io.out_writer(),
+        out,
         "{}",
         args.iter()
             .map(|a| a.to_string())
@@ -131,7 +165,7 @@ fn execute_echo(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
     Ok(())
 }
 
-fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
+fn execute_type(args: Args, out: &mut dyn std::io::Write) -> ShellResult<()> {
     if args.is_empty() {
         return Err(ShellError::MissingOperand);
     }
@@ -141,14 +175,14 @@ fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
 
     match resolve_command_type(name) {
         CommandKind::Builtin(builtin_name) => {
-            writeln!(io.out_writer(), "{} is a shell builtin", builtin_name)?
+            writeln!(out, "{} is a shell builtin", builtin_name)?
         }
         CommandKind::Executable(path) => {
             let display_name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            writeln!(io.out_writer(), "{} is {}", display_name, path.display())?
+            writeln!(out, "{} is {}", display_name, path.display())?
         }
         CommandKind::NotFound => return Err(ShellError::CommandNotFound),
     }
@@ -156,15 +190,20 @@ fn execute_type(args: Args, io: &mut impl ShellIo) -> ShellResult<()> {
     Ok(())
 }
 
-fn execute_pwd(_args: Args, io: &mut impl ShellIo, ctx: &ShellCtx) -> ShellResult<()> {
-    writeln!(io.out_writer(), "{}", ctx.cwd.display())?;
+fn execute_pwd(
+    _args: Args,
+    out: &mut dyn std::io::Write,
+    ctx: &ShellCtx,
+) -> ShellResult<()> {
+    writeln!(out, "{}", ctx.cwd.display())?;
     Ok(())
 }
 
 fn execute_executable(
     executable: crate::command::executable::ExecutableCommand,
     args: Args,
-    io: &mut impl ShellIo,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
     ctx: &ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     use std::process::Stdio;
@@ -183,8 +222,8 @@ fn execute_executable(
     // if the child fills one pipe's buffer while we are blocked reading the
     // other, neither side can make progress.  `ChildStdout`/`ChildStderr` are
     // `Send`, so they can be moved into threads safely.  We accumulate bytes
-    // into `Vec<u8>` and write them into `ShellIo` after joining — keeping
-    // the `?Send` `ShellIo` exclusively on the calling thread.
+    // into `Vec<u8>` and write them into the writers after joining — keeping
+    // the `?Send` writers exclusively on the calling thread.
     let stdout_thread = child.stdout.take().map(|mut pipe| {
         thread::spawn(move || -> std::io::Result<Vec<u8>> {
             let mut buf = Vec::new();
@@ -206,11 +245,11 @@ fn execute_executable(
     // Collect thread results; propagate the first I/O error encountered.
     if let Some(handle) = stdout_thread {
         let bytes = join_io_thread(handle, "stdout")?;
-        io.out_writer().write_all(&bytes)?;
+        out.write_all(&bytes)?;
     }
     if let Some(handle) = stderr_thread {
         let bytes = join_io_thread(handle, "stderr")?;
-        io.err_writer().write_all(&bytes)?;
+        err.write_all(&bytes)?;
     }
 
     if !status.success() {
@@ -247,11 +286,26 @@ mod tests {
         ShellCtx::new(None, std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
     }
 
+    fn run_builtin(
+        builtin: BuiltInName,
+        args: Vec<Arg>,
+        io: &mut MockIo,
+        ctx: &mut ShellCtx,
+    ) -> ShellResult<Option<ExitCode>> {
+        execute(
+            Command::BuiltIn(BuiltInCommand::new(builtin)),
+            args,
+            io,
+            ctx,
+            None,
+        )
+    }
+
     #[test]
     fn test_execute_builtin_exit() {
         let mut io = MockIo::empty();
         let mut ctx = test_ctx();
-        let result = execute_builtin(BuiltInCommand::new(BuiltInName::Exit), vec![], &mut io, &mut ctx);
+        let result = run_builtin(BuiltInName::Exit, vec![], &mut io, &mut ctx);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
@@ -260,8 +314,8 @@ mod tests {
     fn test_execute_builtin_exit_with_code() {
         let mut io = MockIo::empty();
         let mut ctx = test_ctx();
-        let result = execute_builtin(
-            BuiltInCommand::new(BuiltInName::Exit),
+        let result = run_builtin(
+            BuiltInName::Exit,
             vec![Arg::from("1")],
             &mut io,
             &mut ctx,
@@ -272,16 +326,16 @@ mod tests {
     #[test]
     fn test_execute_type_builtin() {
         let args = vec![Arg::from("echo")];
-        let mut io = MockIo::empty();
-        execute_type(args, &mut io).unwrap();
-        assert_eq!(io.output(), b"echo is a shell builtin\n");
+        let mut out: Vec<u8> = Vec::new();
+        execute_type(args, &mut out).unwrap();
+        assert_eq!(out, b"echo is a shell builtin\n");
     }
 
     #[test]
     fn test_execute_type_unrecognized() {
         let args = vec![Arg::from("nonexistentcommand")];
-        let mut io = MockIo::empty();
-        let result = execute_type(args, &mut io);
+        let mut out: Vec<u8> = Vec::new();
+        let result = execute_type(args, &mut out);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap(), ShellError::CommandNotFound);
     }
@@ -289,18 +343,18 @@ mod tests {
     #[test]
     fn test_execute_type_exit_builtin() {
         let args = vec![Arg::from("exit")];
-        let mut io = MockIo::empty();
-        execute_type(args, &mut io).unwrap();
-        assert_eq!(io.output(), b"exit is a shell builtin\n");
+        let mut out: Vec<u8> = Vec::new();
+        execute_type(args, &mut out).unwrap();
+        assert_eq!(out, b"exit is a shell builtin\n");
     }
 
     #[test]
     fn test_execute_builtin_pwd() {
         let cwd = PathBuf::from("/some/test/path");
         let ctx = ShellCtx::new(None, cwd.clone());
-        let mut io = MockIo::empty();
-        execute_pwd(vec![], &mut io, &ctx).unwrap();
-        assert_eq!(io.output(), format!("{}\n", cwd.display()).as_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        execute_pwd(vec![], &mut out, &ctx).unwrap();
+        assert_eq!(out, format!("{}\n", cwd.display()).as_bytes());
     }
 
     #[cfg(unix)]
@@ -324,14 +378,14 @@ mod tests {
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let args = vec![Arg::from("my_test_tool")];
-        let mut io = MockIo::empty();
-        let result = execute_type(args, &mut io);
+        let mut out: Vec<u8> = Vec::new();
+        let result = execute_type(args, &mut out);
 
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("PATH", &original_path) };
 
         result.unwrap();
-        let output = String::from_utf8(io.output().to_vec()).unwrap();
+        let output = String::from_utf8(out).unwrap();
         assert!(
             output.contains("my_test_tool is"),
             "unexpected output: {output}"
@@ -340,6 +394,27 @@ mod tests {
             output.contains(bin_path.to_str().unwrap()),
             "path not in output: {output}"
         );
+    }
+
+    #[test]
+    fn test_execute_echo_with_redirect_writes_to_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let target = dir.path().join("out.txt");
+        let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
+        let mut io = MockIo::empty();
+        let redir = Some(crate::redirect::Redirect::new(target.to_str().unwrap()));
+        let result = execute(
+            Command::BuiltIn(BuiltInCommand::new(BuiltInName::Echo)),
+            vec![Arg::from("hello")],
+            &mut io,
+            &mut ctx,
+            redir,
+        );
+        assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
+        // stdout (io.output) should be empty — echo went to the file.
+        assert_eq!(io.output(), b"", "terminal stdout should be empty");
+        let contents = std::fs::read_to_string(&target).expect("redirect file");
+        assert_eq!(contents, "hello\n");
     }
 
     #[test]
