@@ -21,7 +21,7 @@ pub mod fs;
 pub mod io;
 /// Input parsing: splits raw bytes into a command and its arguments.
 pub mod parser;
-/// Stdout redirection descriptors produced by the parser.
+/// I/O redirection descriptors produced by the parser.
 pub mod redirect;
 /// The interactive REPL shell.
 pub mod shell;

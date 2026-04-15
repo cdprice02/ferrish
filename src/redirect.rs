@@ -16,3 +16,23 @@ impl Redirect {
         }
     }
 }
+
+/// Stderr redirection target extracted from a command line.
+///
+/// When the parser encounters `2>` followed by a filename, it records the
+/// target here and removes the operator tokens from the argument list.
+/// Standard output is unaffected and continues to go to the terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StderrRedirect {
+    /// Path to the file that should receive the command's standard error.
+    pub target: std::path::PathBuf,
+}
+
+impl StderrRedirect {
+    /// Create a new stderr redirect targeting `target`.
+    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
