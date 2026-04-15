@@ -7,11 +7,21 @@ use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
+use crate::redirect::Redirect;
 
-/// Parse a raw input line into a [`Command`] and its argument list.
-pub fn parse(buffer: &[u8]) -> (Command, Args) {
-    let (command, args) = split_command_and_args(buffer);
+/// Parse a raw input line into a [`Command`], its argument list, and an optional
+/// stdout [`Redirect`].
+///
+/// If the line contains `>` or `1>` followed by a filename, that operator and
+/// the filename are stripped from the argument list and returned as a
+/// [`Redirect`].  Only unquoted redirect operators are recognised; a `>`
+/// that appears inside quotes is treated as a literal argument character.
+pub fn parse(buffer: &[u8]) -> (Command, Args, Option<Redirect>) {
+    let (command, raw_args) = split_command_and_args(buffer);
     let command = parse_command(&command);
+
+    let (args, redirect) = extract_redirect(raw_args);
+
     let args = args
         .into_iter()
         .map(|(bytes, style)| match style {
@@ -19,7 +29,59 @@ pub fn parse(buffer: &[u8]) -> (Command, Args) {
             style => Arg::Quoted { bytes, style },
         })
         .collect();
-    (command, args)
+    (command, args, redirect)
+}
+
+/// Scan `raw_args` for an unquoted `>` or `1>` redirect operator.
+///
+/// Returns the remaining argument list (with the operator and its target
+/// filename removed) and an optional [`Redirect`]. If multiple redirect
+/// operators appear, only the last one is returned; earlier redirect
+/// operators are stripped from the argument list but do not trigger
+/// intermediate bash-style side effects such as creating or truncating
+/// their targets.
+///
+/// When a redirect operator appears without a following filename token (e.g.
+/// a trailing `>`), the operator is kept as a normal argument rather than
+/// silently dropped.
+///
+/// # Quoting caveat
+/// Only tokens with [`QuoteStyle::None`] are treated as potential operators.
+/// In this codebase `QuoteStyle::None` covers both truly-unquoted tokens
+/// *and* mixed-quoting contexts (e.g. `1'>'`), so a mixed token whose bytes
+/// happen to be `1>` would also be recognised as a redirect operator.
+/// Distinguishing the two cases would require a dedicated `QuoteStyle::Mixed`
+/// variant; that is left for a future quoting-improvements pass.
+fn extract_redirect(
+    raw_args: Vec<(Vec<u8>, QuoteStyle)>,
+) -> (Vec<(Vec<u8>, QuoteStyle)>, Option<Redirect>) {
+    let mut out_args: Vec<(Vec<u8>, QuoteStyle)> = Vec::new();
+    let mut redirect: Option<Redirect> = None;
+
+    let mut iter = raw_args.into_iter().peekable();
+    while let Some((bytes, style)) = iter.next() {
+        // Only treat unquoted tokens as potential redirect operators.
+        if style == QuoteStyle::None {
+            let token = &bytes[..];
+            if token == b">" || token == b"1>" {
+                // The next token is the redirect target.
+                if let Some((target_bytes, _)) = iter.next() {
+                    let target = std::path::PathBuf::from(
+                        String::from_utf8_lossy(&target_bytes).as_ref(),
+                    );
+                    redirect = Some(Redirect::new(target));
+                } else {
+                    // No filename follows the operator — keep it as a literal
+                    // argument rather than silently dropping it.
+                    out_args.push((bytes, style));
+                }
+                continue;
+            }
+        }
+        out_args.push((bytes, style));
+    }
+
+    (out_args, redirect)
 }
 
 /// Split the trimmed input buffer into a command token and zero or more argument tokens.
@@ -488,5 +550,45 @@ mod tests {
         // 'a'"b" mixes single and double → QuoteStyle::None
         let (_, args) = split_styled(b"echo 'a'\"b\"");
         assert_eq!(args, vec![(b"ab".to_vec(), QuoteStyle::None)]);
+    }
+
+    // --- Redirect extraction tests ---
+
+    #[test]
+    fn test_parse_redirect_gt() {
+        let (_, args, redirect) = parse(b"echo hello > out.txt");
+        assert_eq!(args.iter().map(|a| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        assert!(redirect.is_some(), "redirect should be Some");
+        assert_eq!(redirect.unwrap().target, std::path::PathBuf::from("out.txt"));
+    }
+
+    #[test]
+    fn test_parse_redirect_1gt() {
+        let (_, args, redirect) = parse(b"echo hello 1> out.txt");
+        assert_eq!(args.iter().map(|a| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        assert!(redirect.is_some(), "redirect should be Some for 1>");
+        assert_eq!(redirect.unwrap().target, std::path::PathBuf::from("out.txt"));
+    }
+
+    #[test]
+    fn test_parse_redirect_trailing_operator_kept_as_arg() {
+        // A trailing `>` with no following filename should be preserved as a literal argument.
+        let (_, args, redirect) = parse(b"echo >");
+        assert!(redirect.is_none(), "no redirect target means no Redirect");
+        assert_eq!(
+            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec![">"],
+            "trailing `>` should be kept as a literal arg"
+        );
+    }
+
+    #[test]
+    fn test_parse_no_redirect() {
+        let (_, args, redirect) = parse(b"echo hello world");
+        assert_eq!(
+            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello", "world"]
+        );
+        assert!(redirect.is_none());
     }
 }

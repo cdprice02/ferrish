@@ -8,6 +8,12 @@ pub trait ShellIo {
     fn out_writer(&mut self) -> &mut dyn Write;
     /// Return a mutable reference to the standard error writer.
     fn err_writer(&mut self) -> &mut dyn Write;
+    /// Return mutable references to both the stdout and stderr writers simultaneously.
+    ///
+    /// This is needed when the caller must hold both writers at the same time
+    /// (e.g. to write command output to a redirected file while still sending
+    /// error messages to the terminal stderr).
+    fn writers(&mut self) -> (&mut dyn Write, &mut dyn Write);
 
     /// Read one line (up to and including `\n`) into `buffer`.
     fn read_line(&mut self, buffer: &mut Vec<u8>) -> io::Result<usize> {
@@ -44,6 +50,10 @@ impl ShellIo for StandardIo {
 
     fn err_writer(&mut self) -> &mut dyn Write {
         &mut self.err_writer
+    }
+
+    fn writers(&mut self) -> (&mut dyn Write, &mut dyn Write) {
+        (&mut self.out_writer, &mut self.err_writer)
     }
 }
 
@@ -106,6 +116,10 @@ impl ShellIo for MockIo {
 
     fn err_writer(&mut self) -> &mut dyn Write {
         &mut self.error
+    }
+
+    fn writers(&mut self) -> (&mut dyn Write, &mut dyn Write) {
+        (&mut self.output, &mut self.error)
     }
 }
 

@@ -108,8 +108,15 @@ impl ShellTest {
             })
             .0;
 
-        TestResult { output, error, home_dir: self.home_dir, exit_code }
-        // self drops here — temp_dir is cleaned up
+        TestResult {
+            output,
+            error,
+            home_dir: self.home_dir,
+            exit_code,
+            // Keep the TempDir alive so callers can inspect files written during
+            // the shell session before the directory is cleaned up on drop.
+            _temp_dir: self.temp_dir,
+        }
     }
 }
 
@@ -121,6 +128,9 @@ pub struct TestResult {
     home_dir: Option<PathBuf>,
     #[allow(dead_code)]
     exit_code: u8,
+    /// Keeps the isolated home temp directory alive for the lifetime of this result.
+    #[allow(dead_code)]
+    _temp_dir: Option<tempfile::TempDir>,
 }
 
 impl TestResult {
