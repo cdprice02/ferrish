@@ -13,7 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
-    redirect::{Redirect, StderrRedirect},
+    redirect::{Redirect, RedirectAppend, StderrRedirect},
 };
 
 enum CommandKind {
@@ -55,9 +55,14 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
 ///
 /// When `redirect` is `Some`, the command's standard output is written to the
 /// named file (creating or overwriting it) instead of the shell's normal
-/// stdout.  When `stderr_redirect` is `Some`, the command's standard error is
-/// written to the named file instead of the shell's normal stderr.  Either,
-/// both, or neither redirect may be present independently.
+/// stdout.  When `redirect_append` is `Some`, the command's standard output is
+/// appended to the named file (creating it if it does not exist) instead of
+/// the shell's normal stdout.  When `stderr_redirect` is `Some`, the command's
+/// standard error is written to the named file instead of the shell's normal
+/// stderr.  Any combination of redirects may be present independently.
+///
+/// If both `redirect` and `redirect_append` are `Some`, `redirect` takes
+/// precedence (truncate wins over append for the same command invocation).
 ///
 /// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
 pub fn execute(
@@ -66,9 +71,10 @@ pub fn execute(
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
     redirect: Option<Redirect>,
+    redirect_append: Option<RedirectAppend>,
     stderr_redirect: Option<StderrRedirect>,
 ) -> ShellResult<Option<ExitCode>> {
-    // Open the stdout redirect file if requested.
+    // Open the stdout redirect file if requested (truncate takes precedence over append).
     let mut stdout_file: Option<std::fs::File> = if let Some(ref redir) = redirect {
         let target_path = if redir.target.is_absolute() {
             redir.target.clone()
@@ -76,6 +82,19 @@ pub fn execute(
             ctx.cwd.join(&redir.target)
         };
         Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
+    } else if let Some(ref redir) = redirect_append {
+        let target_path = if redir.target.is_absolute() {
+            redir.target.clone()
+        } else {
+            ctx.cwd.join(&redir.target)
+        };
+        Some(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&target_path)
+                .map_err(ShellError::Io)?,
+        )
     } else {
         None
     };
@@ -327,6 +346,7 @@ mod tests {
             ctx,
             None,
             None,
+            None,
         )
     }
 
@@ -439,6 +459,7 @@ mod tests {
             &mut ctx,
             redir,
             None,
+            None,
         );
         assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
         // stdout (io.output) should be empty — echo went to the file.
@@ -460,6 +481,7 @@ mod tests {
             vec![Arg::from("notanumber")],
             &mut io,
             &mut ctx,
+            None,
             None,
             stderr_redir,
         );

@@ -7,23 +7,34 @@ use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
-use crate::redirect::{Redirect, StderrRedirect};
+use crate::redirect::{Redirect, RedirectAppend, StderrRedirect};
 
 /// Parse a raw input line into a [`Command`], its argument list, an optional
-/// stdout [`Redirect`], and an optional stderr [`StderrRedirect`].
+/// stdout [`Redirect`], an optional stdout append [`RedirectAppend`], and an
+/// optional stderr [`StderrRedirect`].
 ///
 /// If the line contains `>` or `1>` followed by a filename, that operator and
 /// the filename are stripped from the argument list and returned as a
-/// [`Redirect`].  If the line contains `2>` followed by a filename, that
-/// operator and the filename are returned as a [`StderrRedirect`].
+/// [`Redirect`].  If the line contains `>>` followed by a filename, it is
+/// returned as a [`RedirectAppend`] (existing content preserved).  If the
+/// line contains `2>` followed by a filename, that operator and the filename
+/// are returned as a [`StderrRedirect`].
 ///
 /// Only unquoted redirect operators are recognised; an operator character that
 /// appears inside quotes is treated as a literal argument character.
-pub fn parse(buffer: &[u8]) -> (Command, Args, Option<Redirect>, Option<StderrRedirect>) {
+pub fn parse(
+    buffer: &[u8],
+) -> (
+    Command,
+    Args,
+    Option<Redirect>,
+    Option<RedirectAppend>,
+    Option<StderrRedirect>,
+) {
     let (command, raw_args) = split_command_and_args(buffer);
     let command = parse_command(&command);
 
-    let (args, redirect, stderr_redirect) = extract_redirects(raw_args);
+    let (args, redirect, redirect_append, stderr_redirect) = extract_redirects(raw_args);
 
     let args = args
         .into_iter()
@@ -32,26 +43,33 @@ pub fn parse(buffer: &[u8]) -> (Command, Args, Option<Redirect>, Option<StderrRe
             style => Arg::Quoted { bytes, style },
         })
         .collect();
-    (command, args, redirect, stderr_redirect)
+    (command, args, redirect, redirect_append, stderr_redirect)
 }
 
 /// Raw argument token: byte content and its quoting style.
 type RawArg = (Vec<u8>, QuoteStyle);
 
-/// Result of redirect extraction: remaining args, optional stdout redirect, optional stderr redirect.
-type ExtractResult = (Vec<RawArg>, Option<Redirect>, Option<StderrRedirect>);
+/// Result of redirect extraction: remaining args, optional stdout redirect,
+/// optional stdout append redirect, and optional stderr redirect.
+type ExtractResult = (
+    Vec<RawArg>,
+    Option<Redirect>,
+    Option<RedirectAppend>,
+    Option<StderrRedirect>,
+);
 
-/// Scan `raw_args` for unquoted redirect operators (`>`, `1>`, `2>`).
+/// Scan `raw_args` for unquoted redirect operators (`>`, `1>`, `>>`, `2>`).
 ///
 /// Returns the remaining argument list (with operators and their target
-/// filenames removed), an optional stdout [`Redirect`], and an optional
-/// stderr [`StderrRedirect`]. If multiple operators of the same kind appear,
-/// only the last one is returned; earlier ones are stripped from the argument
-/// list but do not trigger intermediate bash-style side effects such as
-/// creating or truncating their targets.
+/// filenames removed), an optional stdout [`Redirect`], an optional stdout
+/// append [`RedirectAppend`], and an optional stderr [`StderrRedirect`]. If
+/// multiple operators of the same kind appear, only the last one is returned;
+/// earlier ones are stripped from the argument list but do not trigger
+/// intermediate bash-style side effects such as creating or truncating their
+/// targets.
 ///
 /// When a redirect operator appears without a following filename token (e.g.
-/// a trailing `>`), the operator is kept as a normal argument rather than
+/// a trailing `>>`), the operator is kept as a normal argument rather than
 /// silently dropped.
 ///
 /// # Quoting caveat
@@ -64,6 +82,7 @@ type ExtractResult = (Vec<RawArg>, Option<Redirect>, Option<StderrRedirect>);
 fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     let mut out_args: Vec<RawArg> = Vec::new();
     let mut redirect: Option<Redirect> = None;
+    let mut redirect_append: Option<RedirectAppend> = None;
     let mut stderr_redirect: Option<StderrRedirect> = None;
 
     let mut iter = raw_args.into_iter().peekable();
@@ -71,6 +90,20 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
         // Only treat unquoted tokens as potential redirect operators.
         if style == QuoteStyle::None {
             let token = &bytes[..];
+            if token == b">>" {
+                // The next token is the append redirect target.
+                if let Some((target_bytes, _)) = iter.next() {
+                    let target = std::path::PathBuf::from(
+                        String::from_utf8_lossy(&target_bytes).as_ref(),
+                    );
+                    redirect_append = Some(RedirectAppend::new(target));
+                } else {
+                    // No filename follows the operator — keep it as a literal
+                    // argument rather than silently dropping it.
+                    out_args.push((bytes, style));
+                }
+                continue;
+            }
             if token == b">" || token == b"1>" {
                 // The next token is the redirect target.
                 if let Some((target_bytes, _)) = iter.next() {
@@ -103,7 +136,7 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
         out_args.push((bytes, style));
     }
 
-    (out_args, redirect, stderr_redirect)
+    (out_args, redirect, redirect_append, stderr_redirect)
 }
 
 /// Split the trimmed input buffer into a command token and zero or more argument tokens.
@@ -578,50 +611,81 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_gt() {
-        let (_, args, redirect, stderr_redirect) = parse(b"echo hello > out.txt");
-        assert_eq!(args.iter().map(|a| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, redirect, redirect_append, stderr_redirect) = parse(b"echo hello > out.txt");
+        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         assert!(redirect.is_some(), "redirect should be Some");
         assert_eq!(redirect.unwrap().target, std::path::PathBuf::from("out.txt"));
+        assert!(redirect_append.is_none());
         assert!(stderr_redirect.is_none());
     }
 
     #[test]
     fn test_parse_redirect_1gt() {
-        let (_, args, redirect, stderr_redirect) = parse(b"echo hello 1> out.txt");
-        assert_eq!(args.iter().map(|a| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, redirect, redirect_append, stderr_redirect) = parse(b"echo hello 1> out.txt");
+        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         assert!(redirect.is_some(), "redirect should be Some for 1>");
         assert_eq!(redirect.unwrap().target, std::path::PathBuf::from("out.txt"));
+        assert!(redirect_append.is_none());
         assert!(stderr_redirect.is_none());
     }
 
     #[test]
     fn test_parse_redirect_2gt() {
-        let (_, args, redirect, stderr_redirect) = parse(b"echo hello 2> err.txt");
-        assert_eq!(args.iter().map(|a| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, redirect, redirect_append, stderr_redirect) = parse(b"echo hello 2> err.txt");
+        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         assert!(redirect.is_none(), "stdout redirect should be None for 2>");
+        assert!(redirect_append.is_none());
         assert!(stderr_redirect.is_some(), "stderr redirect should be Some for 2>");
         assert_eq!(stderr_redirect.unwrap().target, std::path::PathBuf::from("err.txt"));
     }
 
     #[test]
+    fn test_parse_redirect_gtgt() {
+        let (_, args, redirect, redirect_append, stderr_redirect) =
+            parse(b"echo hello >> out.txt");
+        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        assert!(redirect.is_none(), "stdout truncate redirect should be None for >>");
+        assert!(redirect_append.is_some(), "append redirect should be Some for >>");
+        assert_eq!(
+            redirect_append.unwrap().target,
+            std::path::PathBuf::from("out.txt")
+        );
+        assert!(stderr_redirect.is_none());
+    }
+
+    #[test]
     fn test_parse_redirect_trailing_operator_kept_as_arg() {
         // A trailing `>` with no following filename should be preserved as a literal argument.
-        let (_, args, redirect, _) = parse(b"echo >");
+        let (_, args, redirect, redirect_append, _) = parse(b"echo >");
         assert!(redirect.is_none(), "no redirect target means no Redirect");
+        assert!(redirect_append.is_none());
         assert_eq!(
-            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec![">"],
             "trailing `>` should be kept as a literal arg"
         );
     }
 
     #[test]
+    fn test_parse_redirect_trailing_gtgt_kept_as_arg() {
+        // A trailing `>>` with no following filename should be preserved as a literal argument.
+        let (_, args, redirect, redirect_append, _) = parse(b"echo >>");
+        assert!(redirect.is_none());
+        assert!(redirect_append.is_none(), "no redirect target means no RedirectAppend");
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec![">>"],
+            "trailing `>>` should be kept as a literal arg"
+        );
+    }
+
+    #[test]
     fn test_parse_stderr_redirect_trailing_operator_kept_as_arg() {
         // A trailing `2>` with no following filename should be preserved as a literal argument.
-        let (_, args, _, stderr_redirect) = parse(b"echo 2>");
+        let (_, args, _, _, stderr_redirect) = parse(b"echo 2>");
         assert!(stderr_redirect.is_none(), "no redirect target means no StderrRedirect");
         assert_eq!(
-            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["2>"],
             "trailing `2>` should be kept as a literal arg"
         );
@@ -629,12 +693,13 @@ mod tests {
 
     #[test]
     fn test_parse_no_redirect() {
-        let (_, args, redirect, stderr_redirect) = parse(b"echo hello world");
+        let (_, args, redirect, redirect_append, stderr_redirect) = parse(b"echo hello world");
         assert_eq!(
-            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello", "world"]
         );
         assert!(redirect.is_none());
+        assert!(redirect_append.is_none());
         assert!(stderr_redirect.is_none());
     }
 }
