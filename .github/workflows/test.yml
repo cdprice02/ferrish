@@ -3,18 +3,23 @@ name: test
 on:
   pull_request:
     branches: [main]
-  push:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
     branches: [main]
 
 jobs:
   test:
     name: test
+    if: ${{ github.event_name == 'pull_request' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: test

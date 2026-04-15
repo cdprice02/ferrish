@@ -2,8 +2,8 @@
 
 [![build](https://github.com/cdprice02/ferrish/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/cdprice02/ferrish/actions/workflows/build.yml)
 [![test](https://github.com/cdprice02/ferrish/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/cdprice02/ferrish/actions/workflows/test.yml)
-[![coverage](https://coveralls.io/repos/github/cdprice02/ferrish/badge.svg?branch=main)](https://coveralls.io/github/cdprice02/ferrish?branch=main)
 [![lint](https://github.com/cdprice02/ferrish/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/cdprice02/ferrish/actions/workflows/lint.yml)
+[![coverage](https://coveralls.io/repos/github/cdprice02/ferrish/badge.svg?branch=main)](https://coveralls.io/github/cdprice02/ferrish?branch=main)
 <!--
 [![crates.io](https://img.shields.io/crates/v/ferrish.svg)](https://crates.io/crates/ferrish)
 [![docs.rs](https://docs.rs/ferrish/badge.svg)](https://docs.rs/ferrish)
