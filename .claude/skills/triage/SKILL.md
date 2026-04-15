@@ -27,8 +27,8 @@ Use `mcp__plugin_github_github__*` for all GitHub reads and writes. Fall back to
 ### 1. Fetch current state (run in parallel)
 
 - **Open issues:** `mcp__plugin_github_github__list_issues` (state: open)
-- **All labels:** `gh label list` via Bash — fetches the full set of repo-defined labels, not just a hard-coded subset. Use this as the label universe when proposing assignments.
-- **Open milestones:** `gh milestone list` via Bash — lists milestones directly, including those with zero open issues which `list_issues` would miss.
+- **All labels:** `gh label list` via Bash — the MCP does not expose a label-listing operation, so `gh` is the correct tool here per the tool priority guidance. Fetches the full set of repo-defined labels. Use this as the label universe when proposing assignments.
+- **Open milestones:** `gh milestone list` via Bash — the MCP does not expose milestone listing, so `gh` is the correct tool here. Lists all milestones directly, including those with zero open issues which `list_issues` would miss.
 
 ### 2. Read each issue
 
@@ -82,7 +82,7 @@ Wait for the response before proceeding. If the user says "apply all," proceed t
 ### 5. Apply confirmed changes
 
 For each confirmed assignment, use `mcp__plugin_github_github__issue_write` (method: `update`):
-- Labels: set the `labels` field (additive — preserve existing labels)
+- Labels: the GitHub API replaces the label set entirely — do not send only the new label. First read the issue's current labels, then send the union of existing labels plus the newly proposed one.
 - Milestone: set the `milestone` field using the milestone number
 
 For flagged duplicates: only surface them. Never close, link, or comment on issues without explicit instruction.

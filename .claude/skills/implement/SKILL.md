@@ -5,7 +5,7 @@ description: Implement a single ferrish GitHub issue end-to-end — reads the is
 
 # Implement
 
-End-to-end implementation of a single ferrish issue. The only output that matters is a PR URL — not a plan, not a summary of what could be done.
+End-to-end implementation of a single ferrish issue. The deliverable is a PR URL and a one-line status confirming it is open and awaiting code owner review — not a plan, not a summary of what could be done.
 
 ## Repo constants
 

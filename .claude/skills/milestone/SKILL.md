@@ -58,9 +58,9 @@ For each PR:
 |-------|--------|
 | CI pending / running | Wait; revisit next cycle |
 | CI failing | Read failure output via MCP, fix in the worktree, push again |
-| Review comments present | Classify each comment (see below), address mechanical ones |
+| Review comments present (unresolved) | Classify each comment (see below), address mechanical ones. Skip threads where `is_resolved: true`. |
 | Merge conflict | Rebase the branch onto main, re-verify, push |
-| CI passing, review pending | Do nothing — awaiting code owner approval. Do not merge. |
+| CI passing, review pending | Do nothing — awaiting code owner review. Do not merge. |
 | CI passing, review approved | Surface to user: "PR #N has been approved and is ready for you to merge." |
 
 ### Classifying review comments
@@ -80,7 +80,7 @@ Use `mcp__plugin_github_github__list_issues` to re-query the milestone periodica
 When all remaining open PRs are green and awaiting review, stop and report:
 
 ```
-All implementation work is complete. The following PRs are green and awaiting code owner approval:
+All implementation work is complete. The following PRs are green and awaiting code owner review:
 - PR #N — <title> — <url>
 - PR #M — <title> — <url>
 

@@ -71,8 +71,10 @@ fix: address review comments on PR #N
 ```
 
 ```bash
-git push
+git push origin HEAD:<branch-name>
 ```
+
+Use the PR's upstream branch name (from `get` in step 1) as `<branch-name>`. This is explicit and works correctly regardless of `push.default` when the local worktree branch name differs from the upstream.
 
 ### 7. Reply to addressed threads and resolve them
 
