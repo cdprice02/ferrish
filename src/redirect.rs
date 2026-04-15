@@ -5,12 +5,12 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Redirect {
     /// Path to the file that should receive the command's standard output.
-    pub target: String,
+    pub target: std::path::PathBuf,
 }
 
 impl Redirect {
     /// Create a new stdout redirect targeting `target`.
-    pub fn new(target: impl Into<String>) -> Self {
+    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
         Self {
             target: target.into(),
         }

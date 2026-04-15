@@ -99,6 +99,30 @@ fn test_no_redirect_goes_to_stdout() {
     );
 }
 
+/// Redirect should work for external executables, not just builtins.
+/// Uses `cat` (a PATH-resolved executable, not a ferrish builtin) to verify
+/// that the threaded stdout drain/write path correctly routes output to the
+/// redirect file rather than the terminal.
+#[cfg(unix)]
+#[test]
+fn test_redirect_external_executable_stdout_goes_to_file() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .with_file("input.txt", "extout\n")
+        .script("cat input.txt > out.txt")
+        .run();
+
+    assert!(
+        !result.output_contains("extout"),
+        "external executable stdout should not appear on terminal when redirected"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("out.txt"))
+        .expect("out.txt should have been created by redirect");
+    assert_eq!(contents, "extout\n");
+}
+
 /// After a redirect command, the next command (without redirect) still goes to stdout.
 #[test]
 fn test_redirect_does_not_persist_to_next_command() {

@@ -67,8 +67,8 @@ pub fn execute(
 ) -> ShellResult<Option<ExitCode>> {
     if let Some(ref redir) = redirect {
         // Resolve the redirect target path relative to the current working directory.
-        let target_path = if std::path::Path::new(&redir.target).is_absolute() {
-            PathBuf::from(&redir.target)
+        let target_path = if redir.target.is_absolute() {
+            redir.target.clone()
         } else {
             ctx.cwd.join(&redir.target)
         };
@@ -402,7 +402,7 @@ mod tests {
         let target = dir.path().join("out.txt");
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
         let mut io = MockIo::empty();
-        let redir = Some(crate::redirect::Redirect::new(target.to_str().unwrap()));
+        let redir = Some(crate::redirect::Redirect::new(target.clone()));
         let result = execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Echo)),
             vec![Arg::from("hello")],
