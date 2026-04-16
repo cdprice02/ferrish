@@ -1,80 +1,61 @@
-/// Stdout redirection target extracted from a command line.
-///
-/// When the parser encounters `>` or `1>` followed by a filename, it records
-/// the target here and removes the operator tokens from the argument list.
+use std::path::PathBuf;
+
+/// How the target file is opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Redirect {
-    /// Path to the file that should receive the command's standard output.
-    pub target: std::path::PathBuf,
+pub enum RedirectMode {
+    /// Truncate and overwrite the file (`>`/`1>`/`2>`).
+    Overwrite,
+    /// Append to the file, creating it if absent (`>>`/`1>>`/`2>>`).
+    Append,
 }
 
-impl Redirect {
-    /// Create a new stdout redirect targeting `target`.
-    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
+/// A stdout redirection (`>`, `1>`, `>>`, `1>>`).
+///
+/// The parameter type encodes the target fd — passing a `StdoutRedirection`
+/// to `execute()` always redirects fd 1.  There is no redundant fd field to
+/// keep in sync.
+///
+/// The parser applies "last redirect wins" semantics per fd: if `>` / `1>` /
+/// `>>` / `1>>` appear more than once, only the last operator is recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdoutRedirection {
+    /// Whether to overwrite or append to the target file.
+    pub mode: RedirectMode,
+    /// Path to the target file.
+    pub target: PathBuf,
+}
+
+impl StdoutRedirection {
+    /// Create a new stdout redirection.
+    pub fn new(mode: RedirectMode, target: impl Into<PathBuf>) -> Self {
         Self {
+            mode,
             target: target.into(),
         }
     }
 }
 
-/// Stdout append-redirection target extracted from a command line.
+/// A stderr redirection (`2>`, `2>>`).
 ///
-/// When the parser encounters `>>` followed by a filename, it records the
-/// target here and removes the operator tokens from the argument list.
-/// Unlike [`Redirect`], existing file content is preserved — new output is
-/// appended at the end.  If the file does not exist it is created.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RedirectAppend {
-    /// Path to the file that should receive appended standard output.
-    pub target: std::path::PathBuf,
-}
-
-impl RedirectAppend {
-    /// Create a new stdout append redirect targeting `target`.
-    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            target: target.into(),
-        }
-    }
-}
-
-/// Stderr redirection target extracted from a command line.
+/// The parameter type encodes the target fd — passing a `StderrRedirection`
+/// to `execute()` always redirects fd 2.  There is no redundant fd field to
+/// keep in sync.
 ///
-/// When the parser encounters `2>` followed by a filename, it records the
-/// target here and removes the operator tokens from the argument list.
-/// Standard output is unaffected and continues to go to the terminal.
+/// The parser applies "last redirect wins" semantics per fd: if `2>` / `2>>`
+/// appear more than once, only the last operator is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StderrRedirect {
-    /// Path to the file that should receive the command's standard error.
-    pub target: std::path::PathBuf,
+pub struct StderrRedirection {
+    /// Whether to overwrite or append to the target file.
+    pub mode: RedirectMode,
+    /// Path to the target file.
+    pub target: PathBuf,
 }
 
-impl StderrRedirect {
-    /// Create a new stderr redirect targeting `target`.
-    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
+impl StderrRedirection {
+    /// Create a new stderr redirection.
+    pub fn new(mode: RedirectMode, target: impl Into<PathBuf>) -> Self {
         Self {
-            target: target.into(),
-        }
-    }
-}
-
-/// Stderr append-redirection target extracted from a command line.
-///
-/// When the parser encounters `2>>` followed by a filename, it records the
-/// target here and removes the operator tokens from the argument list.
-/// Standard output is unaffected.  Unlike [`StderrRedirect`], existing file
-/// content is preserved — new stderr is appended at the end.  If the file
-/// does not exist it is created.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StderrRedirectAppend {
-    /// Path to the file that should receive appended standard error.
-    pub target: std::path::PathBuf,
-}
-
-impl StderrRedirectAppend {
-    /// Create a new stderr append redirect targeting `target`.
-    pub fn new(target: impl Into<std::path::PathBuf>) -> Self {
-        Self {
+            mode,
             target: target.into(),
         }
     }

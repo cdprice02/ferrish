@@ -10,7 +10,7 @@ use crate::{
     exit::ExitCode,
     io::{ShellIo, StandardIo},
     parser,
-    redirect::{Redirect, RedirectAppend, StderrRedirect, StderrRedirectAppend},
+    redirect::{StderrRedirection, StdoutRedirection},
 };
 
 /// The ferrish shell REPL.
@@ -73,15 +73,12 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, redirect, redirect_append, stderr_redirect, stderr_redirect_append) =
-                parser::parse(buffer);
+            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer);
             match self.execute_command(
                 command.clone(),
                 args,
-                redirect,
-                redirect_append,
+                stdout_redirect,
                 stderr_redirect,
-                stderr_redirect_append,
             ) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
@@ -109,16 +106,10 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, redirect, redirect_append, stderr_redirect, stderr_redirect_append) =
-                parser::parse(buffer);
-            if let Some(exit_code) = self.execute_command(
-                command,
-                args,
-                redirect,
-                redirect_append,
-                stderr_redirect,
-                stderr_redirect_append,
-            )? {
+            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer);
+            if let Some(exit_code) =
+                self.execute_command(command, args, stdout_redirect, stderr_redirect)?
+            {
                 return Ok(exit_code);
             }
         }
@@ -131,20 +122,16 @@ impl<IO: ShellIo> Shell<IO> {
         &mut self,
         command: Command,
         args: Args,
-        redirect: Option<Redirect>,
-        redirect_append: Option<RedirectAppend>,
-        stderr_redirect: Option<StderrRedirect>,
-        stderr_redirect_append: Option<StderrRedirectAppend>,
+        stdout_redirect: Option<StdoutRedirection>,
+        stderr_redirect: Option<StderrRedirection>,
     ) -> ShellResult<Option<ExitCode>> {
         executor::execute(
             command,
             args,
             &mut *self.io.borrow_mut(),
             &mut self.ctx,
-            redirect,
-            redirect_append,
+            stdout_redirect,
             stderr_redirect,
-            stderr_redirect_append,
         )
     }
 }
@@ -244,7 +231,7 @@ mod tests {
             ),
         );
         let args = vec![Arg::from("test"), Arg::from("message")];
-        let result = shell.execute_command(command, args, None, None, None, None);
+        let result = shell.execute_command(command, args, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
         {
@@ -263,7 +250,7 @@ mod tests {
                 crate::command::builtin::BuiltInName::Exit,
             ),
         );
-        let result = shell.execute_command(command, vec![], None, None, None, None);
+        let result = shell.execute_command(command, vec![], None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
