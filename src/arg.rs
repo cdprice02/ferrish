@@ -9,7 +9,7 @@ pub type Args = Vec<Arg>;
 /// double-quoted string, an entirely unquoted token, or a mixed-quoting
 /// context.  This is used by future features: globbing is suppressed for all
 /// quoted args; variable expansion is suppressed for single-quoted args;
-/// operator detection (e.g. redirects) is restricted to `None`-style tokens.
+/// operator detection (e.g. redirects) is restricted to [`QuoteStyle::None`]-style tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuoteStyle {
     /// Argument was entirely unquoted — no quote characters were present.
@@ -25,7 +25,11 @@ pub enum QuoteStyle {
 /// Represents a shell command argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
-    /// A raw byte sequence that originated from entirely unquoted input.
+    /// A raw byte sequence with no preserved quoting metadata.
+    ///
+    /// This variant is treated as unquoted when quote context matters, but it
+    /// does not by itself imply anything about how the value was originally
+    /// constructed or parsed.
     Literal(Vec<u8>),
     /// A byte sequence with its quoting origin preserved.
     Quoted {
