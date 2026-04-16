@@ -32,6 +32,8 @@ List every open issue. For each one note: title, labels, any mentioned dependenc
 
 Build a simple dependency map. Issues with no blockers are the first wave; issues that depend on others wait until their blockers have merged PRs.
 
+If the milestone is large (5+ open issues) or the dependency map shows cross-module interactions (e.g., parser changes feeding executor changes), refine the wave plan with `/ultraplan` before dispatching subagents. Skip for small milestones or milestones of purely independent issues. If `/ultraplan` fails, proceed without it.
+
 ## Phase 2: First wave — implement in parallel
 
 For all unblocked issues, spawn one subagent per issue using the `implement` skill. Each agent must:
@@ -60,7 +62,7 @@ For each PR:
 | CI failing | Read failure output via MCP, fix in the worktree, push again |
 | Review comments present (unresolved) | Classify each comment (see below), address mechanical ones. Skip threads where `is_resolved: true`. |
 | Merge conflict | Rebase the branch onto main, re-verify, push |
-| CI passing, review pending | Do nothing — awaiting code owner review. Do not merge. |
+| CI passing, review pending | Run `/ultrareview <PR#>` as a pre-review gate. Apply any mechanical findings, push, and re-verify CI. Once clean, leave idle — awaiting code owner review. Do not merge. If `/ultrareview` fails, skip it and leave the PR as-is. |
 | CI passing, review approved | Surface to user: "PR #N has been approved and is ready for you to merge." |
 
 ### Classifying review comments

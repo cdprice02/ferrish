@@ -27,7 +27,17 @@ Use `mcp__plugin_github_github__pull_request_read`:
 
 Focus on unresolved threads (`is_resolved: false`). Skip threads that are already resolved or where the author has already replied with a fix.
 
-### 2. Classify each comment
+### 1.5 Run `/ultrareview <PR#>`
+
+In addition to the fetched human review comments, run `/ultrareview <PR#>` to surface issues the human reviewer didn't flag (subtle bugs, missed edge cases, inconsistencies with ferrish conventions).
+
+Merge the cloud reviewer's findings into Step 2's classification table alongside the human comments:
+- Mechanical items → fold into the same fix pass
+- Design items → hold for discussion; don't silently change semantics
+
+If `/ultrareview` fails or returns nothing useful, proceed with human comments only.
+
+### 2. Classify each comment (from both human reviewers and `/ultrareview`)
 
 | Class | Criteria | Action |
 |-------|----------|--------|
