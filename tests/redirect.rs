@@ -147,6 +147,96 @@ fn test_redirect_does_not_persist_to_next_command() {
 }
 
 // ============================================================================
+// Stdout append redirection (>>) integration tests
+// ============================================================================
+
+/// `echo line1 >> out.txt` on a new file should create it with "line1\n".
+#[test]
+fn test_append_redirect_creates_file_when_absent() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo line1 >> out.txt")
+        .run();
+
+    // "line1" should have gone to the file, not terminal stdout.
+    assert!(
+        !result.output_contains("line1"),
+        "appended output must not appear on terminal stdout"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("out.txt"))
+        .expect("out.txt should have been created by >>");
+    assert_eq!(contents, "line1\n");
+}
+
+/// A second `>>` to the same file appends rather than overwrites.
+#[test]
+fn test_append_redirect_preserves_existing_content() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .with_file("out.txt", "existing\n")
+        .script("echo appended >> out.txt")
+        .run();
+
+    assert!(
+        !result.output_contains("appended"),
+        "appended output must not appear on terminal stdout"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("out.txt"))
+        .expect("out.txt should still exist");
+    assert_eq!(contents, "existing\nappended\n");
+}
+
+/// Two consecutive `>>` commands accumulate lines in order.
+#[test]
+fn test_append_redirect_two_commands_accumulate() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo first >> acc.txt\necho second >> acc.txt")
+        .run();
+
+    assert!(
+        !result.output_contains("first"),
+        "redirected lines must not appear on stdout"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("acc.txt"))
+        .expect("acc.txt should exist");
+    assert_eq!(contents, "first\nsecond\n");
+}
+
+/// `>` on a file that already has content from `>>` should overwrite it.
+#[test]
+fn test_truncate_after_append_overwrites() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo appended >> out.txt\necho truncated > out.txt")
+        .run();
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("out.txt"))
+        .expect("out.txt should exist");
+    assert_eq!(contents, "truncated\n");
+}
+
+/// A `>>` without a following filename should be kept as a literal argument
+/// (the operator token must not be silently dropped).
+#[test]
+fn test_append_redirect_trailing_operator_kept_as_arg() {
+    // echo >> with no filename — "echo" receives ">>" as its argument.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo >>")
+        .run();
+
+    result.assert_output_contains(">>");
+}
+
+// ============================================================================
 // Stderr redirection (2>) integration tests
 // ============================================================================
 

@@ -10,7 +10,7 @@ use crate::{
     exit::ExitCode,
     io::{ShellIo, StandardIo},
     parser,
-    redirect::{Redirect, StderrRedirect},
+    redirect::{Redirect, RedirectAppend, StderrRedirect},
 };
 
 /// The ferrish shell REPL.
@@ -73,8 +73,8 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, redirect, stderr_redirect) = parser::parse(buffer);
-            match self.execute_command(command.clone(), args, redirect, stderr_redirect) {
+            let (command, args, redirect, redirect_append, stderr_redirect) = parser::parse(buffer);
+            match self.execute_command(command.clone(), args, redirect, redirect_append, stderr_redirect) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
@@ -101,8 +101,8 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, redirect, stderr_redirect) = parser::parse(buffer);
-            if let Some(exit_code) = self.execute_command(command, args, redirect, stderr_redirect)? {
+            let (command, args, redirect, redirect_append, stderr_redirect) = parser::parse(buffer);
+            if let Some(exit_code) = self.execute_command(command, args, redirect, redirect_append, stderr_redirect)? {
                 return Ok(exit_code);
             }
         }
@@ -116,9 +116,18 @@ impl<IO: ShellIo> Shell<IO> {
         command: Command,
         args: Args,
         redirect: Option<Redirect>,
+        redirect_append: Option<RedirectAppend>,
         stderr_redirect: Option<StderrRedirect>,
     ) -> ShellResult<Option<ExitCode>> {
-        executor::execute(command, args, &mut *self.io.borrow_mut(), &mut self.ctx, redirect, stderr_redirect)
+        executor::execute(
+            command,
+            args,
+            &mut *self.io.borrow_mut(),
+            &mut self.ctx,
+            redirect,
+            redirect_append,
+            stderr_redirect,
+        )
     }
 }
 
@@ -217,7 +226,7 @@ mod tests {
             ),
         );
         let args = vec![Arg::from("test"), Arg::from("message")];
-        let result = shell.execute_command(command, args, None, None);
+        let result = shell.execute_command(command, args, None, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
         {
@@ -236,7 +245,7 @@ mod tests {
                 crate::command::builtin::BuiltInName::Exit,
             ),
         );
-        let result = shell.execute_command(command, vec![], None, None);
+        let result = shell.execute_command(command, vec![], None, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
     }
