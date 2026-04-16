@@ -470,9 +470,13 @@ fn test_stderr_append_redirect_external_executable_appends_to_file() {
         contents.len() > "existing\n".len(),
         "cat's stderr should have been appended after existing content: {contents}"
     );
-    // cat's error message should NOT appear on the terminal — it went to the file.
     assert!(
-        !result.error().contains("No such file or directory"),
-        "cat's own error message should not appear on terminal stderr"
+        contents.contains("/nonexistent"),
+        "redirected stderr should mention the missing path: {contents}"
+    );
+    // cat's own error output should NOT appear on the terminal — it went to the file.
+    assert!(
+        !result.error().contains("/nonexistent"),
+        "cat's own error output should not appear on terminal stderr"
     );
 }
