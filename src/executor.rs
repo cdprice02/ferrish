@@ -13,7 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
-    redirect::{RedirectMode, Redirection},
+    redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
 };
 
 enum CommandKind {
@@ -53,15 +53,16 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
 
 /// Open a redirect target file according to its [`RedirectMode`].
 fn open_redirect_file(
-    redir: &Redirection,
+    mode: &RedirectMode,
+    target: &std::path::Path,
     cwd: &std::path::Path,
 ) -> ShellResult<std::fs::File> {
-    let target_path = if redir.target.is_absolute() {
-        redir.target.clone()
+    let target_path = if target.is_absolute() {
+        target.to_path_buf()
     } else {
-        cwd.join(&redir.target)
+        cwd.join(target)
     };
-    match redir.mode {
+    match mode {
         RedirectMode::Overwrite => {
             std::fs::File::create(&target_path).map_err(ShellError::Io)
         }
@@ -87,17 +88,17 @@ pub fn execute(
     args: Args,
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
-    stdout_redirect: Option<Redirection>,
-    stderr_redirect: Option<Redirection>,
+    stdout_redirect: Option<StdoutRedirection>,
+    stderr_redirect: Option<StderrRedirection>,
 ) -> ShellResult<Option<ExitCode>> {
     let mut stdout_file: Option<std::fs::File> = stdout_redirect
         .as_ref()
-        .map(|r| open_redirect_file(r, &ctx.cwd))
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
         .transpose()?;
 
     let mut stderr_file: Option<std::fs::File> = stderr_redirect
         .as_ref()
-        .map(|r| open_redirect_file(r, &ctx.cwd))
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
         .transpose()?;
 
     match (stdout_file.as_mut(), stderr_file.as_mut()) {
@@ -439,11 +440,7 @@ mod tests {
         let target = dir.path().join("out.txt");
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
         let mut io = MockIo::empty();
-        let redir = Some(Redirection::new(
-            crate::redirect::StdFd::Stdout,
-            RedirectMode::Overwrite,
-            target.clone(),
-        ));
+        let redir = Some(StdoutRedirection::new(RedirectMode::Overwrite, target.clone()));
         let result = execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Echo)),
             vec![Arg::from("hello")],
@@ -466,11 +463,7 @@ mod tests {
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
         let mut io = MockIo::empty();
         // exit with invalid argument writes to stderr
-        let stderr_redir = Some(Redirection::new(
-            crate::redirect::StdFd::Stderr,
-            RedirectMode::Overwrite,
-            err_target.clone(),
-        ));
+        let stderr_redir = Some(StderrRedirection::new(RedirectMode::Overwrite, err_target.clone()));
         let result = execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Exit)),
             vec![Arg::from("notanumber")],

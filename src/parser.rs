@@ -7,19 +7,19 @@ use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
-use crate::redirect::{RedirectMode, Redirection, StdFd};
+use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
 /// Parse a raw input line into a [`Command`], its argument list, an optional
 /// stdout [`Redirection`], and an optional stderr [`Redirection`].
 ///
 /// Recognised redirect operators and their meanings:
 ///
-/// | Operator | fd     | mode     |
-/// |----------|--------|----------|
-/// | `>` / `1>` | stdout | overwrite |
-/// | `>>`       | stdout | append    |
-/// | `2>`       | stderr | overwrite |
-/// | `2>>`      | stderr | append    |
+/// | Operator      | fd     | mode      |
+/// |---------------|--------|-----------|
+/// | `>` / `1>`    | stdout | overwrite |
+/// | `>>` / `1>>`  | stdout | append    |
+/// | `2>`           | stderr | overwrite |
+/// | `2>>`          | stderr | append    |
 ///
 /// When the same fd appears more than once, the **last** operator wins.
 /// Only unquoted redirect operators are recognised; an operator character that
@@ -29,8 +29,8 @@ pub fn parse(
 ) -> (
     Command,
     Args,
-    Option<Redirection>, // stdout
-    Option<Redirection>, // stderr
+    Option<StdoutRedirection>,
+    Option<StderrRedirection>,
 ) {
     let (command, raw_args) = split_command_and_args(buffer);
     let command = parse_command(&command);
@@ -50,15 +50,16 @@ pub fn parse(
 /// Raw argument token: byte content and its quoting style.
 type RawArg = (Vec<u8>, QuoteStyle);
 
-/// Result of redirect extraction: remaining args, optional stdout [`Redirection`],
-/// and optional stderr [`Redirection`].
-type ExtractResult = (Vec<RawArg>, Option<Redirection>, Option<Redirection>);
+/// Result of redirect extraction: remaining args, optional stdout [`StdoutRedirection`],
+/// and optional stderr [`StderrRedirection`].
+type ExtractResult = (Vec<RawArg>, Option<StdoutRedirection>, Option<StderrRedirection>);
 
-/// Scan `raw_args` for unquoted redirect operators (`>`, `1>`, `>>`, `2>`, `2>>`).
+/// Scan `raw_args` for unquoted redirect operators
+/// (`>`, `1>`, `>>`, `1>>`, `2>`, `2>>`).
 ///
 /// Returns the remaining argument list (operators and their target filenames
-/// are removed), an optional stdout [`Redirection`], and an optional stderr
-/// [`Redirection`].  Multiple operators targeting the same fd are allowed;
+/// are removed), an optional stdout [`StdoutRedirection`], and an optional stderr
+/// [`StderrRedirection`].  Multiple operators targeting the same fd are allowed;
 /// **only the last one is recorded** (earlier ones are stripped silently
 /// without side-effects such as creating or truncating intermediate targets).
 ///
@@ -75,8 +76,8 @@ type ExtractResult = (Vec<RawArg>, Option<Redirection>, Option<Redirection>);
 /// variant; that is tracked in issue #85.
 fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     let mut out_args: Vec<RawArg> = Vec::new();
-    let mut stdout_redirect: Option<Redirection> = None;
-    let mut stderr_redirect: Option<Redirection> = None;
+    let mut stdout_redirect: Option<StdoutRedirection> = None;
+    let mut stderr_redirect: Option<StderrRedirection> = None;
 
     let mut iter = raw_args.into_iter().peekable();
     while let Some((bytes, style)) = iter.next() {
@@ -84,29 +85,29 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
         if style == QuoteStyle::None {
             let token = &bytes[..];
 
-            // Determine operator type. Check longer tokens first so that `2>>`
-            // is not mistaken for `2>` with a trailing `>`.
-            let op: Option<(StdFd, RedirectMode)> = if token == b">>" {
-                Some((StdFd::Stdout, RedirectMode::Append))
+            // Classify the token as (is_stdout, mode). Check longer tokens
+            // first so `1>>` / `2>>` are not mistaken for `1>` / `2>`.
+            let op: Option<(bool, RedirectMode)> = if token == b">>" || token == b"1>>" {
+                Some((true, RedirectMode::Append))
             } else if token == b">" || token == b"1>" {
-                Some((StdFd::Stdout, RedirectMode::Overwrite))
+                Some((true, RedirectMode::Overwrite))
             } else if token == b"2>>" {
-                Some((StdFd::Stderr, RedirectMode::Append))
+                Some((false, RedirectMode::Append))
             } else if token == b"2>" {
-                Some((StdFd::Stderr, RedirectMode::Overwrite))
+                Some((false, RedirectMode::Overwrite))
             } else {
                 None
             };
 
-            if let Some((fd, mode)) = op {
+            if let Some((is_stdout, mode)) = op {
                 if let Some((target_bytes, _)) = iter.next() {
                     let target = std::path::PathBuf::from(
                         String::from_utf8_lossy(&target_bytes).as_ref(),
                     );
-                    let redir = Redirection::new(fd.clone(), mode, target);
-                    match fd {
-                        StdFd::Stdout => stdout_redirect = Some(redir),
-                        StdFd::Stderr => stderr_redirect = Some(redir),
+                    if is_stdout {
+                        stdout_redirect = Some(StdoutRedirection::new(mode, target));
+                    } else {
+                        stderr_redirect = Some(StderrRedirection::new(mode, target));
                     }
                 } else {
                     // No filename follows the operator — keep it as a literal
@@ -597,7 +598,6 @@ mod tests {
         let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello > out.txt");
         assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         let r = stdout_redirect.expect("stdout redirect should be Some for >");
-        assert_eq!(r.fd, StdFd::Stdout);
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
         assert!(stderr_redirect.is_none());
@@ -608,7 +608,6 @@ mod tests {
         let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello 1> out.txt");
         assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         let r = stdout_redirect.expect("stdout redirect should be Some for 1>");
-        assert_eq!(r.fd, StdFd::Stdout);
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
         assert!(stderr_redirect.is_none());
@@ -619,7 +618,16 @@ mod tests {
         let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello >> out.txt");
         assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         let r = stdout_redirect.expect("stdout redirect should be Some for >>");
-        assert_eq!(r.fd, StdFd::Stdout);
+        assert_eq!(r.mode, RedirectMode::Append);
+        assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
+        assert!(stderr_redirect.is_none());
+    }
+
+    #[test]
+    fn test_parse_redirect_1gtgt() {
+        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello 1>> out.txt");
+        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let r = stdout_redirect.expect("stdout redirect should be Some for 1>>");
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
         assert!(stderr_redirect.is_none());
@@ -631,7 +639,6 @@ mod tests {
         assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
         assert!(stdout_redirect.is_none(), "stdout redirect should be None for 2>");
         let r = stderr_redirect.expect("stderr redirect should be Some for 2>");
-        assert_eq!(r.fd, StdFd::Stderr);
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("err.txt"));
     }
@@ -645,7 +652,6 @@ mod tests {
         );
         assert!(stdout_redirect.is_none());
         let r = stderr_redirect.expect("stderr redirect should be Some for 2>>");
-        assert_eq!(r.fd, StdFd::Stderr);
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("err.txt"));
     }

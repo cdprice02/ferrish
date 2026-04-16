@@ -10,7 +10,7 @@ use crate::{
     exit::ExitCode,
     io::{ShellIo, StandardIo},
     parser,
-    redirect::Redirection,
+    redirect::{StderrRedirection, StdoutRedirection},
 };
 
 /// The ferrish shell REPL.
@@ -122,8 +122,8 @@ impl<IO: ShellIo> Shell<IO> {
         &mut self,
         command: Command,
         args: Args,
-        stdout_redirect: Option<Redirection>,
-        stderr_redirect: Option<Redirection>,
+        stdout_redirect: Option<StdoutRedirection>,
+        stderr_redirect: Option<StderrRedirection>,
     ) -> ShellResult<Option<ExitCode>> {
         executor::execute(
             command,
