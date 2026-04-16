@@ -13,7 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
-    redirect::{Redirect, RedirectAppend, StderrRedirect},
+    redirect::{Redirect, RedirectAppend, StderrRedirect, StderrRedirectAppend},
 };
 
 enum CommandKind {
@@ -59,12 +59,18 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
 /// appended to the named file (creating it if it does not exist) instead of
 /// the shell's normal stdout.  When `stderr_redirect` is `Some`, the command's
 /// standard error is written to the named file instead of the shell's normal
-/// stderr.  Any combination of redirects may be present independently.
+/// stderr.  When `stderr_redirect_append` is `Some`, the command's standard
+/// error is appended to the named file (creating it if it does not exist).
+/// Any combination of redirects may be present independently.
 ///
 /// If both `redirect` and `redirect_append` are `Some`, `redirect` takes
 /// precedence (truncate wins over append for the same command invocation).
+/// Likewise, if both `stderr_redirect` and `stderr_redirect_append` are `Some`,
+/// `stderr_redirect` takes precedence.
 ///
 /// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
+// Issue #26 will consolidate these parameters into an ExecuteOptions struct.
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     command: Command,
     args: Args,
@@ -73,6 +79,7 @@ pub fn execute(
     redirect: Option<Redirect>,
     redirect_append: Option<RedirectAppend>,
     stderr_redirect: Option<StderrRedirect>,
+    stderr_redirect_append: Option<StderrRedirectAppend>,
 ) -> ShellResult<Option<ExitCode>> {
     // Open the stdout redirect file if requested (truncate takes precedence over append).
     let mut stdout_file: Option<std::fs::File> = if let Some(ref redir) = redirect {
@@ -99,7 +106,7 @@ pub fn execute(
         None
     };
 
-    // Open the stderr redirect file if requested.
+    // Open the stderr redirect file if requested (truncate takes precedence over append).
     let mut stderr_file: Option<std::fs::File> = if let Some(ref redir) = stderr_redirect {
         let target_path = if redir.target.is_absolute() {
             redir.target.clone()
@@ -107,6 +114,19 @@ pub fn execute(
             ctx.cwd.join(&redir.target)
         };
         Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
+    } else if let Some(ref redir) = stderr_redirect_append {
+        let target_path = if redir.target.is_absolute() {
+            redir.target.clone()
+        } else {
+            ctx.cwd.join(&redir.target)
+        };
+        Some(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&target_path)
+                .map_err(ShellError::Io)?,
+        )
     } else {
         None
     };
@@ -347,6 +367,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -460,6 +481,7 @@ mod tests {
             redir,
             None,
             None,
+            None,
         );
         assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
         // stdout (io.output) should be empty — echo went to the file.
@@ -484,6 +506,7 @@ mod tests {
             None,
             None,
             stderr_redir,
+            None,
         );
         assert!(result.is_ok(), "execute with stderr redirect should succeed: {result:?}");
         // io.error() (terminal stderr) should be empty — error went to the file.

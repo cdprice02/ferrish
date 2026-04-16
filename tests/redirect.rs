@@ -356,3 +356,123 @@ fn test_stderr_redirect_does_not_affect_subsequent_stdout() {
         .expect("err.txt should exist");
     assert!(!contents.is_empty(), "cat's stderr should have been captured to file");
 }
+
+// ============================================================================
+// Stderr append redirection (2>>) integration tests
+// ============================================================================
+
+/// `exit notanumber 2>> err.txt` on a new file should create it with the error.
+#[test]
+fn test_stderr_append_redirect_creates_file_when_absent() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("exit notanumber 2>> err.txt")
+        .run();
+
+    // Error should have gone to the file, not to terminal stderr.
+    assert!(
+        !result.error().contains("numeric argument required"),
+        "redirected stderr must not appear on terminal stderr"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("err.txt"))
+        .expect("err.txt should have been created by 2>>");
+    assert!(
+        contents.contains("numeric argument required"),
+        "expected error message in redirect file, got: {contents}"
+    );
+}
+
+/// A second `2>>` to the same file appends rather than overwrites.
+#[test]
+fn test_stderr_append_redirect_preserves_existing_content() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .with_file("err.txt", "existing\n")
+        .script("exit notanumber 2>> err.txt")
+        .run();
+
+    assert!(
+        !result.error().contains("numeric argument required"),
+        "redirected stderr must not appear on terminal stderr"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("err.txt"))
+        .expect("err.txt should still exist");
+    assert!(
+        contents.starts_with("existing\n"),
+        "original content should be preserved: {contents}"
+    );
+    assert!(
+        contents.contains("numeric argument required"),
+        "appended error should appear after existing content: {contents}"
+    );
+}
+
+/// `2>>` should capture only stderr; stdout should still reach the terminal.
+#[test]
+fn test_stderr_append_redirect_stdout_still_goes_to_terminal() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo visible 2>> err.txt")
+        .run();
+
+    assert!(
+        result.output_contains("visible"),
+        "stdout should still go to terminal when only stderr is append-redirected"
+    );
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("err.txt"))
+        .expect("err.txt should have been created by 2>>");
+    assert!(
+        contents.is_empty(),
+        "stderr append file should be empty when no errors occur: {contents}"
+    );
+}
+
+/// A trailing `2>>` without a filename should be kept as a literal argument.
+#[test]
+fn test_stderr_append_redirect_trailing_operator_kept_as_arg() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo 2>>")
+        .run();
+
+    result.assert_output_contains("2>>");
+}
+
+/// Append stderr redirection should work for external executables.
+/// Uses `cat /nonexistent` (writes to stderr) with a pre-existing file to
+/// verify that the threaded pipe-drain path appends stderr correctly.
+/// The shell itself may print a non-zero-exit notice to terminal stderr, but
+/// `cat`'s own error message should go to the redirect file, not the terminal.
+#[cfg(unix)]
+#[test]
+fn test_stderr_append_redirect_external_executable_appends_to_file() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .with_file("err.txt", "existing\n")
+        .script("cat /nonexistent 2>> err.txt")
+        .run();
+
+    let home = result.home_dir().expect("has home dir");
+    let contents = std::fs::read_to_string(home.join("err.txt"))
+        .expect("err.txt should exist after 2>> redirect");
+    assert!(
+        contents.starts_with("existing\n"),
+        "original content should be preserved: {contents}"
+    );
+    // cat's own stderr ("No such file or directory") should have been appended.
+    assert!(
+        contents.len() > "existing\n".len(),
+        "cat's stderr should have been appended after existing content: {contents}"
+    );
+    // cat's error message should NOT appear on the terminal — it went to the file.
+    assert!(
+        !result.error().contains("No such file or directory"),
+        "cat's own error message should not appear on terminal stderr"
+    );
+}
