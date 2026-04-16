@@ -13,7 +13,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
-    redirect::{Redirect, RedirectAppend, StderrRedirect, StderrRedirectAppend},
+    redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
 };
 
 enum CommandKind {
@@ -51,85 +51,55 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
     CommandKind::NotFound
 }
 
+/// Open a redirect target file according to its [`RedirectMode`].
+fn open_redirect_file(
+    mode: &RedirectMode,
+    target: &std::path::Path,
+    cwd: &std::path::Path,
+) -> ShellResult<std::fs::File> {
+    let target_path = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    };
+    match mode {
+        RedirectMode::Overwrite => {
+            std::fs::File::create(&target_path).map_err(ShellError::Io)
+        }
+        RedirectMode::Append => std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&target_path)
+            .map_err(ShellError::Io),
+    }
+}
+
 /// Dispatch and execute a parsed command, returning an optional exit code.
 ///
-/// When `redirect` is `Some`, the command's standard output is written to the
-/// named file (creating or overwriting it) instead of the shell's normal
-/// stdout.  When `redirect_append` is `Some`, the command's standard output is
-/// appended to the named file (creating it if it does not exist) instead of
-/// the shell's normal stdout.  When `stderr_redirect` is `Some`, the command's
-/// standard error is written to the named file instead of the shell's normal
-/// stderr.  When `stderr_redirect_append` is `Some`, the command's standard
-/// error is appended to the named file (creating it if it does not exist).
-/// Any combination of redirects may be present independently.
-///
-/// If both `redirect` and `redirect_append` are `Some`, `redirect` takes
-/// precedence (truncate wins over append for the same command invocation).
-/// Likewise, if both `stderr_redirect` and `stderr_redirect_append` are `Some`,
-/// `stderr_redirect` takes precedence.
+/// When `stdout_redirect` is `Some`, the command's standard output is written
+/// to the named file (overwriting or appending, per [`RedirectMode`]) instead
+/// of the shell's normal stdout.  When `stderr_redirect` is `Some`, the
+/// command's standard error is redirected likewise.  Any combination of
+/// redirects may be present independently.
 ///
 /// Returns `Ok(Some(code))` when the command requests shell exit, `Ok(None)` otherwise.
-// Issue #26 will consolidate these parameters into an ExecuteOptions struct.
-#[allow(clippy::too_many_arguments)]
 pub fn execute(
     command: Command,
     args: Args,
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
-    redirect: Option<Redirect>,
-    redirect_append: Option<RedirectAppend>,
-    stderr_redirect: Option<StderrRedirect>,
-    stderr_redirect_append: Option<StderrRedirectAppend>,
+    stdout_redirect: Option<StdoutRedirection>,
+    stderr_redirect: Option<StderrRedirection>,
 ) -> ShellResult<Option<ExitCode>> {
-    // Open the stdout redirect file if requested (truncate takes precedence over append).
-    let mut stdout_file: Option<std::fs::File> = if let Some(ref redir) = redirect {
-        let target_path = if redir.target.is_absolute() {
-            redir.target.clone()
-        } else {
-            ctx.cwd.join(&redir.target)
-        };
-        Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
-    } else if let Some(ref redir) = redirect_append {
-        let target_path = if redir.target.is_absolute() {
-            redir.target.clone()
-        } else {
-            ctx.cwd.join(&redir.target)
-        };
-        Some(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&target_path)
-                .map_err(ShellError::Io)?,
-        )
-    } else {
-        None
-    };
+    let mut stdout_file: Option<std::fs::File> = stdout_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
 
-    // Open the stderr redirect file if requested (truncate takes precedence over append).
-    let mut stderr_file: Option<std::fs::File> = if let Some(ref redir) = stderr_redirect {
-        let target_path = if redir.target.is_absolute() {
-            redir.target.clone()
-        } else {
-            ctx.cwd.join(&redir.target)
-        };
-        Some(std::fs::File::create(&target_path).map_err(ShellError::Io)?)
-    } else if let Some(ref redir) = stderr_redirect_append {
-        let target_path = if redir.target.is_absolute() {
-            redir.target.clone()
-        } else {
-            ctx.cwd.join(&redir.target)
-        };
-        Some(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&target_path)
-                .map_err(ShellError::Io)?,
-        )
-    } else {
-        None
-    };
+    let mut stderr_file: Option<std::fs::File> = stderr_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
 
     match (stdout_file.as_mut(), stderr_file.as_mut()) {
         (Some(out_f), Some(err_f)) => {
@@ -366,8 +336,6 @@ mod tests {
             ctx,
             None,
             None,
-            None,
-            None,
         )
     }
 
@@ -472,15 +440,13 @@ mod tests {
         let target = dir.path().join("out.txt");
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
         let mut io = MockIo::empty();
-        let redir = Some(crate::redirect::Redirect::new(target.clone()));
+        let redir = Some(StdoutRedirection::new(RedirectMode::Overwrite, target.clone()));
         let result = execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Echo)),
             vec![Arg::from("hello")],
             &mut io,
             &mut ctx,
             redir,
-            None,
-            None,
             None,
         );
         assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
@@ -497,16 +463,14 @@ mod tests {
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
         let mut io = MockIo::empty();
         // exit with invalid argument writes to stderr
-        let stderr_redir = Some(crate::redirect::StderrRedirect::new(err_target.clone()));
+        let stderr_redir = Some(StderrRedirection::new(RedirectMode::Overwrite, err_target.clone()));
         let result = execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Exit)),
             vec![Arg::from("notanumber")],
             &mut io,
             &mut ctx,
             None,
-            None,
             stderr_redir,
-            None,
         );
         assert!(result.is_ok(), "execute with stderr redirect should succeed: {result:?}");
         // io.error() (terminal stderr) should be empty — error went to the file.
