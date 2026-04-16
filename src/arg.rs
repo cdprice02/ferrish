@@ -6,13 +6,16 @@ pub type Args = Vec<Arg>;
 /// The quoting context in which a shell argument was parsed.
 ///
 /// Tracks whether the argument originated from a single-quoted string, a
-/// double-quoted string, or was unquoted (or had a mixed quoting context).
-/// This is used by future features: globbing is suppressed for all quoted
-/// args; variable expansion is suppressed for single-quoted args.
+/// double-quoted string, an entirely unquoted token, or a mixed-quoting
+/// context.  This is used by future features: globbing is suppressed for all
+/// quoted args; variable expansion is suppressed for single-quoted args;
+/// operator detection (e.g. redirects) is restricted to [`QuoteStyle::None`]-style tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuoteStyle {
-    /// Argument was unquoted, or has a mixed quoting context (e.g. `pre"mid"post`).
+    /// Argument was entirely unquoted — no quote characters were present.
     None,
+    /// Argument combined quoted and unquoted segments (e.g. `pre"mid"post`, `1'>'`).
+    Mixed,
     /// Argument was entirely enclosed in single quotes; all characters are literal.
     Single,
     /// Argument was entirely enclosed in double quotes; backslash escaping applies.
@@ -22,7 +25,11 @@ pub enum QuoteStyle {
 /// Represents a shell command argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
-    /// A raw byte sequence that originated from unquoted or mixed-context input.
+    /// A raw byte sequence with no preserved quoting metadata.
+    ///
+    /// This variant is treated as unquoted when quote context matters, but it
+    /// does not by itself imply anything about how the value was originally
+    /// constructed or parsed.
     Literal(Vec<u8>),
     /// A byte sequence with its quoting origin preserved.
     Quoted {
