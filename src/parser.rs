@@ -85,13 +85,10 @@ type ExtractResult = (
 /// a trailing `>>`), the operator is kept as a normal argument rather than
 /// silently dropped.
 ///
-/// # Quoting caveat
+/// # Quoting
 /// Only tokens with [`QuoteStyle::None`] are treated as potential operators.
-/// In this codebase `QuoteStyle::None` covers both truly-unquoted tokens
-/// *and* mixed-quoting contexts (e.g. `1'>'`), so a mixed token whose bytes
-/// happen to be `1>` would also be recognised as a redirect operator.
-/// Distinguishing the two cases would require a dedicated `QuoteStyle::Mixed`
-/// variant; that is tracked in issue #85.
+/// Mixed-quoted tokens (e.g. `1'>'`, which produces bytes `1>`) carry
+/// [`QuoteStyle::Mixed`] and are therefore never mistaken for operators.
 fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     let mut out_args: Vec<RawArg> = Vec::new();
     let mut redirect: Option<Redirect> = None;
@@ -202,7 +199,7 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
     let mut token_started = false;
     // Quote style for the token currently being built. None = unstarted; once set
     // to Single or Double it stays unless a byte from a different quoting context
-    // arrives, at which point it becomes None (unquoted/mixed).
+    // arrives, at which point it becomes Mixed.
     let mut token_style: Option<QuoteStyle> = None;
 
     let mut i = 0;
@@ -241,8 +238,12 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
                 current.push(buffer[i]);
             }
             token_started = true;
-            // Unquoted bytes make this a mixed/unquoted token.
-            token_style = Some(QuoteStyle::None);
+            // A backslash outside quotes is an unquoted context; if quoted bytes
+            // preceded it the token becomes Mixed.
+            token_style = match token_style {
+                None | Some(QuoteStyle::None) => Some(QuoteStyle::None),
+                _ => Some(QuoteStyle::Mixed),
+            };
         } else if byte == b'\'' {
             // Opening single quote — enter single-quote mode and mark token as started.
             // Even empty quotes (e.g. `''`) count as beginning a token so that a
@@ -253,7 +254,7 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Single);
             } else if !matches!(token_style, Some(QuoteStyle::Single)) {
-                token_style = Some(QuoteStyle::None);
+                token_style = Some(QuoteStyle::Mixed);
             }
         } else if byte == b'"' {
             // Opening double quote — enter double-quote mode and mark token as started.
@@ -264,7 +265,7 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Double);
             } else if !matches!(token_style, Some(QuoteStyle::Double)) {
-                token_style = Some(QuoteStyle::None);
+                token_style = Some(QuoteStyle::Mixed);
             }
         } else if byte.is_ascii_whitespace() {
             if token_started || !current.is_empty() {
@@ -275,8 +276,11 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
         } else {
             current.push(byte);
             token_started = true;
-            // Any unquoted byte makes this a mixed/unquoted token.
-            token_style = Some(QuoteStyle::None);
+            // An unquoted byte after a quoted segment makes the token Mixed.
+            token_style = match token_style {
+                None | Some(QuoteStyle::None) => Some(QuoteStyle::None),
+                _ => Some(QuoteStyle::Mixed),
+            };
         }
 
         i += 1;
@@ -629,17 +633,24 @@ mod tests {
     }
 
     #[test]
-    fn test_style_mixed_is_none() {
-        // pre"mid"post has unquoted bytes → QuoteStyle::None
+    fn test_style_mixed_is_mixed() {
+        // pre"mid"post has unquoted bytes → QuoteStyle::Mixed
         let (_, args) = split_styled(b"echo pre\"mid\"post");
-        assert_eq!(args, vec![(b"premidpost".to_vec(), QuoteStyle::None)]);
+        assert_eq!(args, vec![(b"premidpost".to_vec(), QuoteStyle::Mixed)]);
     }
 
     #[test]
-    fn test_style_single_then_double_is_none() {
-        // 'a'"b" mixes single and double → QuoteStyle::None
+    fn test_style_single_then_double_is_mixed() {
+        // 'a'"b" mixes single and double → QuoteStyle::Mixed
         let (_, args) = split_styled(b"echo 'a'\"b\"");
-        assert_eq!(args, vec![(b"ab".to_vec(), QuoteStyle::None)]);
+        assert_eq!(args, vec![(b"ab".to_vec(), QuoteStyle::Mixed)]);
+    }
+
+    #[test]
+    fn test_style_unquoted_then_single_is_mixed() {
+        // 1'>' has unquoted '1' then single-quoted '>' → QuoteStyle::Mixed
+        let (_, args) = split_styled(b"echo 1'>'");
+        assert_eq!(args, vec![(b"1>".to_vec(), QuoteStyle::Mixed)]);
     }
 
     // --- Redirect extraction tests ---
@@ -758,6 +769,21 @@ mod tests {
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["2>"],
             "trailing `2>` should be kept as a literal arg"
+        );
+    }
+
+    #[test]
+    fn test_parse_mixed_quoted_operator_not_a_redirect() {
+        // 1'>' has bytes `1>` but QuoteStyle::Mixed — must not be treated as a redirect.
+        let (_, args, redirect, redirect_append, stderr_redirect, stderr_redirect_append) =
+            parse(b"echo 1'>'");
+        assert!(redirect.is_none(), "mixed-quoted 1'>' must not trigger a redirect");
+        assert!(redirect_append.is_none());
+        assert!(stderr_redirect.is_none());
+        assert!(stderr_redirect_append.is_none());
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["1>"],
         );
     }
 
