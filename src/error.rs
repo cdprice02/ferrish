@@ -1,6 +1,7 @@
 use std::process::ExitStatus;
 
 use crate::arg::{Arg, QuoteStyle};
+use crate::command::Command;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
@@ -63,6 +64,22 @@ pub enum ShellError {
     #[diagnostic(code(ferrish::exec::failed))]
     ExecutionFailed(#[source] std::io::Error),
 
+    // --- Command context ---
+    /// Wraps any execution error with the command that caused it.
+    ///
+    /// Applied at the dispatch boundary so individual error variants stay lean.
+    #[error("{command}: {source}")]
+    #[diagnostic(code(ferrish::exec::command_error))]
+    InCommand {
+        /// The command that was executing when the error occurred.
+        command: Command,
+        /// The underlying shell error.
+        #[source]
+        #[diagnostic_source]
+        source: Box<ShellError>,
+    },
+
+
     // --- I/O ---
     /// An I/O error propagated from the underlying stream.
     #[error(transparent)]
@@ -85,24 +102,28 @@ pub enum ShellError {
     },
 }
 
+impl std::borrow::Borrow<dyn miette::Diagnostic> for Box<ShellError> {
+    fn borrow(&self) -> &(dyn miette::Diagnostic + 'static) {
+        self.as_ref()
+    }
+}
+
 impl PartialEq for ShellError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::CommandNotFound { name: l }, Self::CommandNotFound { name: r }) => l == r,
-            (Self::FileNotFound { arg: l_arg }, Self::FileNotFound { arg: r_arg }) => {
-                l_arg == r_arg
-            }
-            (Self::IsADirectory { arg: l_arg }, Self::IsADirectory { arg: r_arg }) => {
-                l_arg == r_arg
-            }
-            (Self::NotADirectory { arg: l_arg }, Self::NotADirectory { arg: r_arg }) => {
-                l_arg == r_arg
-            }
+            (Self::FileNotFound { arg: la }, Self::FileNotFound { arg: ra }) => la == ra,
+            (Self::IsADirectory { arg: la }, Self::IsADirectory { arg: ra }) => la == ra,
+            (Self::NotADirectory { arg: la }, Self::NotADirectory { arg: ra }) => la == ra,
             (Self::NonZeroExit(l0), Self::NonZeroExit(r0)) => l0 == r0,
             (Self::ExecutionFailed(l0), Self::ExecutionFailed(r0)) => {
                 l0.raw_os_error() == r0.raw_os_error()
             }
             (Self::Io(l0), Self::Io(r0)) => l0.raw_os_error() == r0.raw_os_error(),
+            (
+                Self::InCommand { command: lc, source: ls },
+                Self::InCommand { command: rc, source: rs },
+            ) => lc == rc && ls == rs,
             (
                 Self::UnclosedQuote {
                     style: l_style,
@@ -121,7 +142,11 @@ impl PartialEq for ShellError {
 impl ShellError {
     /// Check if this error is fatal (should stop execution)
     pub fn is_fatal(&self) -> bool {
-        matches!(self, ShellError::ExecutionFailed(_))
+        match self {
+            ShellError::ExecutionFailed(_) => true,
+            ShellError::InCommand { source, .. } => source.is_fatal(),
+            _ => false,
+        }
     }
 }
 
@@ -143,26 +168,42 @@ mod tests {
 
     #[test]
     fn test_display_file_not_found() {
-        let err = ShellError::FileNotFound {
-            arg: Arg::from("/path/to/file"),
-        };
+        let err = ShellError::FileNotFound { arg: Arg::from("/path/to/file") };
         assert_eq!(err.to_string(), "no such file or directory: /path/to/file");
     }
 
     #[test]
     fn test_display_is_a_directory() {
-        let err = ShellError::IsADirectory {
-            arg: Arg::from("/some/dir"),
-        };
+        let err = ShellError::IsADirectory { arg: Arg::from("/some/dir") };
         assert_eq!(err.to_string(), "is a directory: /some/dir");
     }
 
     #[test]
     fn test_display_not_a_directory() {
-        let err = ShellError::NotADirectory {
-            arg: Arg::from("/some/file"),
-        };
+        let err = ShellError::NotADirectory { arg: Arg::from("/some/file") };
         assert_eq!(err.to_string(), "not a directory: /some/file");
+    }
+
+    #[test]
+    fn test_in_command_prepends_command_name() {
+        let inner = ShellError::FileNotFound { arg: Arg::from("/no/such") };
+        let err = ShellError::InCommand {
+            command: Command::BuiltIn(crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Cd,
+            )),
+            source: Box::new(inner),
+        };
+        assert_eq!(err.to_string(), "cd: no such file or directory: /no/such");
+    }
+
+    #[test]
+    fn test_in_command_fatal_delegates_to_source() {
+        let inner = ShellError::ExecutionFailed(std::io::Error::last_os_error());
+        let err = ShellError::InCommand {
+            command: Command::Unrecognized(b"mycmd".to_vec()),
+            source: Box::new(inner),
+        };
+        assert!(err.is_fatal());
     }
 
     #[test]
@@ -197,9 +238,7 @@ mod tests {
 
     #[test]
     fn test_is_fatal_file_not_found() {
-        let err = ShellError::FileNotFound {
-            arg: Arg::from("test"),
-        };
+        let err = ShellError::FileNotFound { arg: Arg::from("test") };
         assert!(!err.is_fatal());
     }
 
@@ -214,23 +253,15 @@ mod tests {
 
     #[test]
     fn test_equality_file_not_found() {
-        let err1 = ShellError::FileNotFound {
-            arg: Arg::from("file1"),
-        };
-        let err2 = ShellError::FileNotFound {
-            arg: Arg::from("file1"),
-        };
+        let err1 = ShellError::FileNotFound { arg: Arg::from("file1") };
+        let err2 = ShellError::FileNotFound { arg: Arg::from("file1") };
         assert_eq!(err1, err2);
     }
 
     #[test]
     fn test_inequality_file_not_found() {
-        let err1 = ShellError::FileNotFound {
-            arg: Arg::from("file1"),
-        };
-        let err2 = ShellError::FileNotFound {
-            arg: Arg::from("file2"),
-        };
+        let err1 = ShellError::FileNotFound { arg: Arg::from("file1") };
+        let err2 = ShellError::FileNotFound { arg: Arg::from("file2") };
         assert_ne!(err1, err2);
     }
 
@@ -246,19 +277,15 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            let status1 = ExitStatusExt::from_raw(42 << 8);
-            let status2 = ExitStatusExt::from_raw(42 << 8);
-            let e1 = ShellError::NonZeroExit(status1);
-            let e2 = ShellError::NonZeroExit(status2);
+            let e1 = ShellError::NonZeroExit(ExitStatusExt::from_raw(42 << 8));
+            let e2 = ShellError::NonZeroExit(ExitStatusExt::from_raw(42 << 8));
             assert_eq!(e1, e2);
         }
         #[cfg(windows)]
         {
             use std::os::windows::process::ExitStatusExt;
-            let status1 = ExitStatusExt::from_raw(42);
-            let status2 = ExitStatusExt::from_raw(42);
-            let e1 = ShellError::NonZeroExit(status1);
-            let e2 = ShellError::NonZeroExit(status2);
+            let e1 = ShellError::NonZeroExit(ExitStatusExt::from_raw(42));
+            let e2 = ShellError::NonZeroExit(ExitStatusExt::from_raw(42));
             assert_eq!(e1, e2);
         }
     }

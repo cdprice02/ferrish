@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 /// An external executable command located on `PATH`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutableCommand {
     file_path: PathBuf,
 }

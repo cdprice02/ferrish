@@ -4,7 +4,7 @@ pub(crate) mod builtin;
 pub(crate) mod executable;
 
 /// Represents a shell command.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// A shell built-in command (e.g. `echo`, `cd`, `exit`).
     BuiltIn(builtin::BuiltInCommand),
