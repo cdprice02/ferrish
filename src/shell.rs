@@ -73,7 +73,16 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer);
+            let src = String::from_utf8_lossy(buffer).into_owned();
+            let (command, args, stdout_redirect, stderr_redirect) =
+                match parser::parse(buffer) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let report = miette::Report::new(e).with_source_code(src);
+                        writeln!(self.io.borrow_mut().err_writer(), "{report:?}")?;
+                        continue;
+                    }
+                };
             match self.execute_command(
                 command.clone(),
                 args,
@@ -84,11 +93,10 @@ impl<IO: ShellIo> Shell<IO> {
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let e = anyhow::Error::new(e).context(command);
-                    writeln!(self.io.borrow_mut().err_writer(), "{:#}", e)?;
-
+                    let report = miette::Report::new(e).with_source_code(src);
+                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}")?;
                     if fatal {
-                        return Err(e);
+                        return Err(anyhow::anyhow!("fatal shell error"));
                     }
                 }
             }
@@ -106,7 +114,7 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer);
+            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer)?;
             if let Some(exit_code) =
                 self.execute_command(command, args, stdout_redirect, stderr_redirect)?
             {
