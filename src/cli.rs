@@ -2,12 +2,7 @@ use clap::Parser;
 
 /// An early-stage shell implementation in Rust.
 #[derive(Parser, Debug)]
-#[command(
-    name = "ferrish",
-    version,
-    about,
-    after_help = "Builtins: cd, echo, exit, pwd, type"
-)]
+#[command(name = "ferrish", version, about)]
 pub struct Cli {}
 
 #[cfg(test)]
@@ -33,8 +28,6 @@ mod tests {
         assert!(rendered.contains("Usage:"), "missing Usage: in help");
         assert!(rendered.contains("--help"), "missing --help in help");
         assert!(rendered.contains("--version"), "missing --version in help");
-        assert!(rendered.contains("cd"), "missing builtin list in help");
-        assert!(rendered.contains("echo"), "missing builtin list in help");
     }
 
     #[test]
