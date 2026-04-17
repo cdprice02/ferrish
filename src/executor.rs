@@ -132,7 +132,9 @@ fn execute_with_writers(
     match command {
         Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
         Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
-        Command::Unrecognized(_) => Err(ShellError::CommandNotFound),
+        Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
+            name: String::from_utf8_lossy(&cmd).into_owned(),
+        }),
     }
 }
 
@@ -221,7 +223,7 @@ fn execute_type(args: Args, out: &mut dyn std::io::Write) -> ShellResult<()> {
                 .unwrap_or("");
             writeln!(out, "{} is {}", display_name, path.display())?
         }
-        CommandKind::NotFound => return Err(ShellError::CommandNotFound),
+        CommandKind::NotFound => return Err(ShellError::CommandNotFound { name: arg.to_string() }),
     }
 
     Ok(())
@@ -375,7 +377,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let result = execute_type(args, &mut out);
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap(), ShellError::CommandNotFound);
+        assert_eq!(
+            result.err().unwrap(),
+            ShellError::CommandNotFound { name: "nonexistentcommand".to_string() }
+        );
     }
 
     #[test]

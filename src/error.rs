@@ -5,7 +5,7 @@ use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
 /// Convenience result type for shell execution results
-pub type ShellResult<T> = anyhow::Result<T, ShellError>;
+pub type ShellResult<T> = Result<T, ShellError>;
 
 /// Errors that can occur during command execution
 ///
@@ -15,9 +15,12 @@ pub type ShellResult<T> = anyhow::Result<T, ShellError>;
 pub enum ShellError {
     // --- Command-level ---
     /// The requested command could not be found as a built-in or on `PATH`.
-    #[error("command not found")]
+    #[error("{name}: command not found")]
     #[diagnostic(code(ferrish::command_not_found))]
-    CommandNotFound,
+    CommandNotFound {
+        /// The command name that was not found.
+        name: String,
+    },
 
     /// A required operand was not provided.
     #[error("missing operand")]
@@ -76,7 +79,7 @@ pub enum ShellError {
     UnclosedQuote {
         /// The kind of quote that was opened but never closed.
         style: QuoteStyle,
-        /// Byte offset of the opening quote character in the source line.
+        /// Byte offset of the opening quote character in the trimmed input line passed to the parser.
         #[label("quote opened here")]
         span: SourceSpan,
     },
@@ -85,6 +88,7 @@ pub enum ShellError {
 impl PartialEq for ShellError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::CommandNotFound { name: l }, Self::CommandNotFound { name: r }) => l == r,
             (Self::FileNotFound { arg: l_arg }, Self::FileNotFound { arg: r_arg }) => {
                 l_arg == r_arg
             }
@@ -127,8 +131,8 @@ mod tests {
 
     #[test]
     fn test_display_command_not_found() {
-        let err = ShellError::CommandNotFound;
-        assert_eq!(err.to_string(), "command not found");
+        let err = ShellError::CommandNotFound { name: "foo".to_string() };
+        assert_eq!(err.to_string(), "foo: command not found");
     }
 
     #[test]
@@ -187,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_is_fatal_command_not_found() {
-        let err = ShellError::CommandNotFound;
+        let err = ShellError::CommandNotFound { name: "foo".to_string() };
         assert!(!err.is_fatal());
     }
 
@@ -232,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_equality_different_variant() {
-        let err1 = ShellError::CommandNotFound;
+        let err1 = ShellError::CommandNotFound { name: "foo".to_string() };
         let err2 = ShellError::MissingOperand;
         assert_ne!(err1, err2);
     }

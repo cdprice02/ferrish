@@ -49,8 +49,8 @@ pub use shell::Shell;
 /// let io = MockIo::from_lines(&["echo test", "exit"]);
 /// let mut shell = Shell::builder().with_io(io);
 /// let exit_code = shell.run()?;
-/// # Ok::<(), anyhow::Error>(())
+/// # Ok::<(), miette::Report>(())
 /// ```
-pub fn run() -> anyhow::Result<exit::ExitCode> {
+pub fn run() -> miette::Result<exit::ExitCode> {
     Shell::<crate::io::StandardIo>::builder().with_std_io().run()
 }

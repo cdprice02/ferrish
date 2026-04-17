@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use miette::IntoDiagnostic as _;
+
 use crate::{
     Command,
     arg::Args,
@@ -53,17 +55,17 @@ impl<IO: ShellIo> Shell<IO> {
     }
 
     /// Run the interactive REPL loop until `exit` is called or stdin is exhausted.
-    pub fn run(&mut self) -> anyhow::Result<ExitCode> {
+    pub fn run(&mut self) -> miette::Result<ExitCode> {
         loop {
             {
                 let mut io = self.io.borrow_mut();
                 let w = io.out_writer();
-                w.write_all(self.ctx.config.prompt.as_bytes())?;
-                w.flush()?;
+                w.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
+                w.flush().into_diagnostic()?;
             }
 
             let mut buffer = Vec::<u8>::new();
-            let bytes = self.io.borrow_mut().read_line(&mut buffer)?;
+            let bytes = self.io.borrow_mut().read_line(&mut buffer).into_diagnostic()?;
             if bytes == 0 {
                 return Ok(ExitCode::SUCCESS);
             }
@@ -79,7 +81,7 @@ impl<IO: ShellIo> Shell<IO> {
                     Ok(r) => r,
                     Err(e) => {
                         let report = miette::Report::new(e).with_source_code(src);
-                        writeln!(self.io.borrow_mut().err_writer(), "{report:?}")?;
+                        writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
                         continue;
                     }
                 };
@@ -94,9 +96,9 @@ impl<IO: ShellIo> Shell<IO> {
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let report = miette::Report::new(e).with_source_code(src);
-                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}")?;
+                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
                     if fatal {
-                        return Err(anyhow::anyhow!("fatal shell error"));
+                        return Ok(ExitCode::FAILURE);
                     }
                 }
             }
@@ -104,7 +106,7 @@ impl<IO: ShellIo> Shell<IO> {
     }
 
     /// Execute a sequence of command lines as a non-interactive script.
-    pub fn run_script(&mut self, script: &[&str]) -> anyhow::Result<ExitCode> {
+    pub fn run_script(&mut self, script: &[&str]) -> miette::Result<ExitCode> {
         for line in script {
             let buffer = line.as_bytes();
             let buffer = buffer.trim_ascii();
@@ -114,7 +116,9 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer)?;
+            let src = String::from_utf8_lossy(buffer).into_owned();
+            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer)
+                .map_err(|e| miette::Report::new(e).with_source_code(src))?;
             if let Some(exit_code) =
                 self.execute_command(command, args, stdout_redirect, stderr_redirect)?
             {
