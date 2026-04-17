@@ -75,12 +75,12 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let src = String::from_utf8_lossy(buffer).into_owned();
+            let make_src = || String::from_utf8_lossy(buffer).into_owned();
             let (command, args, stdout_redirect, stderr_redirect) =
                 match parser::parse(buffer) {
                     Ok(r) => r,
                     Err(e) => {
-                        let report = miette::Report::new(e).with_source_code(src);
+                        let report = miette::Report::new(e).with_source_code(make_src());
                         writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
                         continue;
                     }
@@ -95,7 +95,7 @@ impl<IO: ShellIo> Shell<IO> {
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let report = miette::Report::new(e).with_source_code(src);
+                    let report = miette::Report::new(e).with_source_code(make_src());
                     writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);
@@ -116,9 +116,11 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let src = String::from_utf8_lossy(buffer).into_owned();
             let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer)
-                .map_err(|e| miette::Report::new(e).with_source_code(src))?;
+                .map_err(|e| {
+                    miette::Report::new(e)
+                        .with_source_code(String::from_utf8_lossy(buffer).into_owned())
+                })?;
             if let Some(exit_code) =
                 self.execute_command(command, args, stdout_redirect, stderr_redirect)?
             {
