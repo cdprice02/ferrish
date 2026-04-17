@@ -2,10 +2,12 @@
 name = "ferrish"
 version = "0.1.0"
 authors = ["Carson Price <cdprice02@users.noreply.github.com>"]
+description = "A modern, Rust-powered shell focused on safety, performance, and a clean interactive experience."
 edition = "2024"
 rust-version = "1.92"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 is_executable = "1.0"
 miette = { version = "7", features = ["fancy"] }
 soft-canonicalize = { version = "0.5.4", features = ["dunce"] }

@@ -1,6 +1,8 @@
 #![deny(missing_docs)]
 //! ferrish — an early-stage shell implementation in Rust.
 
+/// CLI argument parsing (--help, --version).
+pub mod cli;
 /// Shell command argument types.
 pub mod arg;
 /// Shell command variants (built-in, executable, unrecognized).
@@ -52,5 +54,9 @@ pub use shell::Shell;
 /// # Ok::<(), miette::Report>(())
 /// ```
 pub fn run() -> miette::Result<exit::ExitCode> {
-    Shell::<crate::io::StandardIo>::builder().with_std_io().run()
+    use clap::Parser;
+    match cli::Cli::try_parse() {
+        Ok(_) => Shell::<crate::io::StandardIo>::builder().with_std_io().run(),
+        Err(e) => e.exit(),
+    }
 }
