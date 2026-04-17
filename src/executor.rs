@@ -131,8 +131,8 @@ fn execute_with_writers(
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     let result = match &command {
-        Command::BuiltIn(builtin) => execute_builtin(builtin.clone(), args, out, err, ctx),
-        Command::Executable(executable) => execute_executable(executable.clone(), args, out, err, ctx),
+        Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
+        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
         Command::Unrecognized(cmd) => {
             return Err(ShellError::CommandNotFound {
                 name: String::from_utf8_lossy(cmd).into_owned(),
@@ -143,7 +143,7 @@ fn execute_with_writers(
 }
 
 fn execute_builtin(
-    builtin: BuiltInCommand,
+    builtin: &BuiltInCommand,
     args: Args,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -239,7 +239,7 @@ fn execute_pwd(
 }
 
 fn execute_executable(
-    executable: ExecutableCommand,
+    executable: &ExecutableCommand,
     args: Args,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,

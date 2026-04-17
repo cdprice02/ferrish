@@ -86,7 +86,7 @@ impl<IO: ShellIo> Shell<IO> {
                     }
                 };
             match self.execute_command(
-                command.clone(),
+                command,
                 args,
                 stdout_redirect,
                 stderr_redirect,
