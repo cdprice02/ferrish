@@ -96,6 +96,40 @@ fn test_nonfatal_error_then_continue() {
     result.assert_output_contains("survived");
 }
 
+// ============================================================================
+// Unclosed quote error tests (issue #46)
+// ============================================================================
+
+#[test]
+fn test_unclosed_double_quote_reports_error_and_continues() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo \"hello\necho survived")
+        .run();
+
+    let err = result.error();
+    assert!(
+        err.contains("unclosed") && err.contains("quote"),
+        "expected unclosed quote error, got: {err}"
+    );
+    result.assert_output_contains("survived");
+}
+
+#[test]
+fn test_unclosed_single_quote_reports_error_and_continues() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo 'hello\necho survived")
+        .run();
+
+    let err = result.error();
+    assert!(
+        err.contains("unclosed") && err.contains("quote"),
+        "expected unclosed quote error, got: {err}"
+    );
+    result.assert_output_contains("survived");
+}
+
 /// Unknown command error is written to stderr, not stdout
 #[test]
 fn test_error_goes_to_stderr_not_stdout() {

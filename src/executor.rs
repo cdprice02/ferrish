@@ -7,6 +7,7 @@ use crate::{
     Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
+    command::executable::ExecutableCommand,
     ctx::ShellCtx,
     env::get_path_dirs,
     error::{ShellError, ShellResult},
@@ -129,15 +130,20 @@ fn execute_with_writers(
     err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
-    match command {
+    let result = match &command {
         Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
         Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
-        Command::Unrecognized(_) => Err(ShellError::CommandNotFound),
-    }
+        Command::Unrecognized(cmd) => {
+            return Err(ShellError::CommandNotFound {
+                name: String::from_utf8_lossy(cmd).into_owned(),
+            })
+        }
+    };
+    result.map_err(|e| ShellError::InCommand { command, source: Box::new(e) })
 }
 
 fn execute_builtin(
-    builtin: BuiltInCommand,
+    builtin: &BuiltInCommand,
     args: Args,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -175,13 +181,9 @@ fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
     let new_dir = fs::resolve_path(&target.into(), ctx.home_dir.as_deref(), &ctx.cwd)?;
 
     if !new_dir.exists() {
-        return Err(ShellError::FileNotFound {
-            arg: target.clone(),
-        });
+        return Err(ShellError::FileNotFound { arg: target.clone() });
     } else if !new_dir.is_dir() {
-        return Err(ShellError::NotADirectory {
-            arg: target.clone(),
-        });
+        return Err(ShellError::NotADirectory { arg: target.clone() });
     }
 
     ctx.cwd = new_dir;
@@ -221,7 +223,7 @@ fn execute_type(args: Args, out: &mut dyn std::io::Write) -> ShellResult<()> {
                 .unwrap_or("");
             writeln!(out, "{} is {}", display_name, path.display())?
         }
-        CommandKind::NotFound => return Err(ShellError::CommandNotFound),
+        CommandKind::NotFound => return Err(ShellError::CommandNotFound { name: arg.to_string() }),
     }
 
     Ok(())
@@ -237,7 +239,7 @@ fn execute_pwd(
 }
 
 fn execute_executable(
-    executable: crate::command::executable::ExecutableCommand,
+    executable: &ExecutableCommand,
     args: Args,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
@@ -375,7 +377,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let result = execute_type(args, &mut out);
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap(), ShellError::CommandNotFound);
+        assert_eq!(
+            result.err().unwrap(),
+            ShellError::CommandNotFound { name: "nonexistentcommand".to_string() }
+        );
     }
 
     #[test]

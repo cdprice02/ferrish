@@ -1,12 +1,14 @@
 use std::str::FromStr;
 
 use is_executable::IsExecutable;
+use miette::SourceSpan;
 
 use crate::arg::{Arg, Args, QuoteStyle};
 use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
+use crate::error::ShellError;
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
 /// Parse a raw input line into a [`Command`], its argument list, an optional
@@ -26,13 +28,16 @@ use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 /// appears inside quotes is treated as a literal argument character.
 pub fn parse(
     buffer: &[u8],
-) -> (
-    Command,
-    Args,
-    Option<StdoutRedirection>,
-    Option<StderrRedirection>,
-) {
-    let (command, raw_args) = split_command_and_args(buffer);
+) -> Result<
+    (
+        Command,
+        Args,
+        Option<StdoutRedirection>,
+        Option<StderrRedirection>,
+    ),
+    ShellError,
+> {
+    let (command, raw_args) = split_command_and_args(buffer)?;
     let command = parse_command(&command);
 
     let (args, stdout_redirect, stderr_redirect) = extract_redirects(raw_args);
@@ -44,7 +49,7 @@ pub fn parse(
             style => Arg::Quoted { bytes, style },
         })
         .collect();
-    (command, args, stdout_redirect, stderr_redirect)
+    Ok((command, args, stdout_redirect, stderr_redirect))
 }
 
 /// Raw argument token: byte content and its quoting style.
@@ -134,22 +139,19 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
 /// consumes the backslash (e.g. `\ ` → space, `\\` → `\`).
 ///
 /// Adjacent quoted and unquoted segments are concatenated into a single token.
-fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
+///
+/// Returns `Err(ShellError::UnclosedQuote)` if a quote is opened but never closed.
+fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), ShellError> {
     let buffer = buffer.trim_ascii();
     let mut parts: Vec<(Vec<u8>, QuoteStyle)> = Vec::new();
 
     let mut current: Vec<u8> = Vec::new();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
-    // Track whether we've started building a token (needed to emit empty tokens
-    // only when inside a quoted empty string at the word boundary — but for
-    // single-quotes the shell spec says empty quotes produce an empty argument
-    // only if they stand alone, which the concatenation logic handles naturally).
     let mut token_started = false;
-    // Quote style for the token currently being built. None = unstarted; once set
-    // to Single or Double it stays unless a byte from a different quoting context
-    // arrives, at which point it becomes Mixed.
     let mut token_style: Option<QuoteStyle> = None;
+    // Byte offset of the opening quote character (relative to the trimmed buffer).
+    let mut quote_open_pos: usize = 0;
 
     let mut i = 0;
     while i < buffer.len() {
@@ -157,14 +159,12 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
 
         if in_single_quote {
             if byte == b'\'' {
-                // Closing quote — exit single-quote mode but stay in current token.
                 in_single_quote = false;
             } else {
                 current.push(byte);
             }
         } else if in_double_quote {
             if byte == b'"' {
-                // Closing double quote — exit double-quote mode but stay in current token.
                 in_double_quote = false;
             } else if byte == b'\\' && i + 1 < buffer.len() {
                 // Inside double quotes, backslash only escapes `"` and `\`.
@@ -187,30 +187,23 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
                 current.push(buffer[i]);
             }
             token_started = true;
-            // A backslash outside quotes is an unquoted context; if quoted bytes
-            // preceded it the token becomes Mixed.
             token_style = match token_style {
                 None | Some(QuoteStyle::None) => Some(QuoteStyle::None),
                 _ => Some(QuoteStyle::Mixed),
             };
         } else if byte == b'\'' {
-            // Opening single quote — enter single-quote mode and mark token as started.
-            // Even empty quotes (e.g. `''`) count as beginning a token so that a
-            // standalone `''` produces one empty argument rather than being dropped.
             in_single_quote = true;
+            quote_open_pos = i;
             token_started = true;
-            // Only keep Single style if the token has been purely single-quoted so far.
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Single);
             } else if !matches!(token_style, Some(QuoteStyle::Single)) {
                 token_style = Some(QuoteStyle::Mixed);
             }
         } else if byte == b'"' {
-            // Opening double quote — enter double-quote mode and mark token as started.
-            // Same empty-quote semantics as single quotes.
             in_double_quote = true;
+            quote_open_pos = i;
             token_started = true;
-            // Only keep Double style if the token has been purely double-quoted so far.
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Double);
             } else if !matches!(token_style, Some(QuoteStyle::Double)) {
@@ -225,7 +218,6 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
         } else {
             current.push(byte);
             token_started = true;
-            // An unquoted byte after a quoted segment makes the token Mixed.
             token_style = match token_style {
                 None | Some(QuoteStyle::None) => Some(QuoteStyle::None),
                 _ => Some(QuoteStyle::Mixed),
@@ -235,24 +227,33 @@ fn split_command_and_args(buffer: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>
         i += 1;
     }
 
-    // Push the last token (may be empty if input was all whitespace after trim,
-    // but trim_ascii above ensures the buffer is non-empty when we reach here).
+    if in_single_quote {
+        return Err(ShellError::UnclosedQuote {
+            style: QuoteStyle::Single,
+            span: SourceSpan::from((quote_open_pos, 1)),
+        });
+    }
+    if in_double_quote {
+        return Err(ShellError::UnclosedQuote {
+            style: QuoteStyle::Double,
+            span: SourceSpan::from((quote_open_pos, 1)),
+        });
+    }
+
     if token_started || !current.is_empty() {
         let style = token_style.unwrap_or(QuoteStyle::None);
         parts.push((current, style));
     }
 
-    // Split into command and args. If parts is empty (blank input after trim),
-    // return an empty command and no args.
     if parts.is_empty() {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let mut iter = parts.into_iter();
     let (command, _) = iter.next().unwrap_or((Vec::new(), QuoteStyle::None));
     let args: Vec<(Vec<u8>, QuoteStyle)> = iter.collect();
 
-    (command, args)
+    Ok((command, args))
 }
 
 /// Resolve a raw command token to a [`Command`] variant.
@@ -290,14 +291,14 @@ mod tests {
 
     // Helper: split and return command + arg bytes (quoting metadata stripped).
     fn split(input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
-        let (cmd, args) = split_command_and_args(input);
+        let (cmd, args) = split_command_and_args(input).unwrap();
         let arg_bytes = args.into_iter().map(|(b, _)| b).collect();
         (cmd, arg_bytes)
     }
 
     // Helper: split and return command + (bytes, style) pairs.
     fn split_styled(input: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
-        split_command_and_args(input)
+        split_command_and_args(input).unwrap()
     }
 
     #[test]
@@ -381,7 +382,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_preserves_spaces() {
-        // echo "hello    world" → one arg: "hello    world"
         let (command, args) = split(b"echo \"hello    world\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"hello    world".to_vec()]);
@@ -389,7 +389,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_adjacent_concatenation() {
-        // echo "hello""world" → one arg: "helloworld"
         let (command, args) = split(b"echo \"hello\"\"world\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
@@ -397,7 +396,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_mixed_adjacent_concatenation() {
-        // echo hello"world" → one arg: "helloworld"
         let (command, args) = split(b"echo hello\"world\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
@@ -405,7 +403,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_empty_quotes() {
-        // echo "" → one empty arg
         let (command, args) = split(b"echo \"\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"".to_vec()]);
@@ -413,7 +410,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_multiple_args() {
-        // echo "foo bar" "baz qux" → two args: "foo bar", "baz qux"
         let (command, args) = split(b"echo \"foo bar\" \"baz qux\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"foo bar".to_vec(), b"baz qux".to_vec()]);
@@ -421,7 +417,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_with_single_quote_inside() {
-        // Single quotes inside double quotes are literal.
         let (command, args) = split(b"echo \"it's\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"it's".to_vec()]);
@@ -429,7 +424,6 @@ mod tests {
 
     #[test]
     fn test_double_quote_unquoted_mixed() {
-        // echo pre"mid"post → one arg: "premidpost"
         let (command, args) = split(b"echo pre\"mid\"post");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"premidpost".to_vec()]);
@@ -439,7 +433,6 @@ mod tests {
 
     #[test]
     fn test_dquote_backslash_escapes_backslash() {
-        // echo "A \\ escapes itself" → A \ escapes itself
         let (command, args) = split(b"echo \"A \\\\ escapes itself\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"A \\ escapes itself".to_vec()]);
@@ -447,7 +440,6 @@ mod tests {
 
     #[test]
     fn test_dquote_backslash_escapes_dquote() {
-        // echo "A \" inside double quotes" → A " inside double quotes
         let (command, args) = split(b"echo \"A \\\" inside double quotes\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"A \" inside double quotes".to_vec()]);
@@ -455,7 +447,6 @@ mod tests {
 
     #[test]
     fn test_dquote_backslash_non_special_preserved() {
-        // echo "\n" → \n (backslash preserved before non-special char)
         let (command, args) = split(b"echo \"\\n\"");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"\\n".to_vec()]);
@@ -465,7 +456,6 @@ mod tests {
 
     #[test]
     fn test_single_quote_preserves_spaces() {
-        // echo 'hello    world' → one arg: "hello    world"
         let (command, args) = split(b"echo 'hello    world'");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"hello    world".to_vec()]);
@@ -473,7 +463,6 @@ mod tests {
 
     #[test]
     fn test_single_quote_adjacent_concatenation() {
-        // echo 'hello''world' → one arg: "helloworld"
         let (command, args) = split(b"echo 'hello''world'");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
@@ -481,7 +470,6 @@ mod tests {
 
     #[test]
     fn test_single_quote_mixed_adjacent_concatenation() {
-        // echo hello''world → one arg: "helloworld"
         let (command, args) = split(b"echo hello''world");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
@@ -489,7 +477,6 @@ mod tests {
 
     #[test]
     fn test_single_quote_backslash_literal() {
-        // Inside single quotes, backslash is literal.
         let (command, args) = split(b"echo 'back\\slash'");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"back\\slash".to_vec()]);
@@ -497,7 +484,6 @@ mod tests {
 
     #[test]
     fn test_single_quote_empty_quotes() {
-        // echo hello''world → "helloworld" (empty quotes ignored mid-token)
         let (command, args) = split(b"echo hello''world");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"helloworld".to_vec()]);
@@ -507,7 +493,6 @@ mod tests {
 
     #[test]
     fn test_backslash_space_literal() {
-        // echo three\ \ \ spaces → one arg: "three   spaces"
         let (command, args) = split(b"echo three\\ \\ \\ spaces");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"three   spaces".to_vec()]);
@@ -515,7 +500,6 @@ mod tests {
 
     #[test]
     fn test_backslash_backslash() {
-        // echo hello\\world → one arg: "hello\world"
         let (command, args) = split(b"echo hello\\\\world");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"hello\\world".to_vec()]);
@@ -523,7 +507,6 @@ mod tests {
 
     #[test]
     fn test_backslash_letter() {
-        // echo test\\nexample → one arg: "testnexample"  (backslash is consumed)
         let (command, args) = split(b"echo test\\nexample");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"testnexample".to_vec()]);
@@ -531,7 +514,6 @@ mod tests {
 
     #[test]
     fn test_backslash_single_quote() {
-        // echo \'hello\' → one arg: "'hello'"  (quotes are made literal)
         let (command, args) = split(b"echo \\'hello\\'");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"'hello'".to_vec()]);
@@ -539,8 +521,6 @@ mod tests {
 
     #[test]
     fn test_backslash_inside_single_quote_is_literal() {
-        // Inside single quotes, backslash is not special.
-        // echo 'back\slash' → one arg: "back\slash"
         let (command, args) = split(b"echo 'back\\slash'");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"back\\slash".to_vec()]);
@@ -548,7 +528,6 @@ mod tests {
 
     #[test]
     fn test_trailing_backslash_consumed_silently() {
-        // A trailing backslash with no following character is silently consumed.
         let (command, args) = split(b"echo hello\\");
         assert_eq!(command, b"echo");
         assert_eq!(args, vec![b"hello".to_vec()]);
@@ -576,38 +555,101 @@ mod tests {
 
     #[test]
     fn test_style_adjacent_single_quoted_stays_single() {
-        // 'hello''world' is purely single-quoted
         let (_, args) = split_styled(b"echo 'hello''world'");
         assert_eq!(args, vec![(b"helloworld".to_vec(), QuoteStyle::Single)]);
     }
 
     #[test]
     fn test_style_mixed_is_mixed() {
-        // pre"mid"post has unquoted bytes → QuoteStyle::Mixed
         let (_, args) = split_styled(b"echo pre\"mid\"post");
         assert_eq!(args, vec![(b"premidpost".to_vec(), QuoteStyle::Mixed)]);
     }
 
     #[test]
     fn test_style_single_then_double_is_mixed() {
-        // 'a'"b" mixes single and double → QuoteStyle::Mixed
         let (_, args) = split_styled(b"echo 'a'\"b\"");
         assert_eq!(args, vec![(b"ab".to_vec(), QuoteStyle::Mixed)]);
     }
 
     #[test]
     fn test_style_unquoted_then_single_is_mixed() {
-        // 1'>' has unquoted '1' then single-quoted '>' → QuoteStyle::Mixed
         let (_, args) = split_styled(b"echo 1'>'");
         assert_eq!(args, vec![(b"1>".to_vec(), QuoteStyle::Mixed)]);
+    }
+
+    // --- Unclosed quote error tests ---
+
+    #[test]
+    fn test_unclosed_double_quote_returns_error() {
+        let result = split_command_and_args(b"echo \"hello");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ShellError::UnclosedQuote {
+                    style: QuoteStyle::Double,
+                    ..
+                }
+            ),
+            "expected UnclosedQuote(Double), got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_double_quote_span_offset() {
+        let result = split_command_and_args(b"echo \"hello");
+        let err = result.unwrap_err();
+        if let ShellError::UnclosedQuote { span, .. } = err {
+            assert_eq!(span.offset(), 5, "quote opens at byte 5 in 'echo \"hello'");
+        } else {
+            panic!("expected UnclosedQuote");
+        }
+    }
+
+    #[test]
+    fn test_unclosed_single_quote_returns_error() {
+        let result = split_command_and_args(b"echo 'hello");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ShellError::UnclosedQuote {
+                    style: QuoteStyle::Single,
+                    ..
+                }
+            ),
+            "expected UnclosedQuote(Single), got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_single_quote_span_offset() {
+        let result = split_command_and_args(b"echo 'hello");
+        let err = result.unwrap_err();
+        if let ShellError::UnclosedQuote { span, .. } = err {
+            assert_eq!(span.offset(), 5, "quote opens at byte 5 in \"echo 'hello\"");
+        } else {
+            panic!("expected UnclosedQuote");
+        }
+    }
+
+    #[test]
+    fn test_unclosed_quote_is_non_fatal() {
+        let result = split_command_and_args(b"echo \"unterminated");
+        let err = result.unwrap_err();
+        assert!(!err.is_fatal());
     }
 
     // --- Redirect extraction tests ---
 
     #[test]
     fn test_parse_redirect_gt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello > out.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello > out.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello"]
+        );
         let r = stdout_redirect.expect("stdout redirect should be Some for >");
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
@@ -616,8 +658,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_1gt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello 1> out.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello 1> out.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello"]
+        );
         let r = stdout_redirect.expect("stdout redirect should be Some for 1>");
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
@@ -626,8 +672,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_gtgt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello >> out.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello >> out.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello"]
+        );
         let r = stdout_redirect.expect("stdout redirect should be Some for >>");
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
@@ -636,8 +686,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_1gtgt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello 1>> out.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello 1>> out.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello"]
+        );
         let r = stdout_redirect.expect("stdout redirect should be Some for 1>>");
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
@@ -646,8 +700,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_2gt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello 2> err.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hello"]);
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello 2> err.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hello"]
+        );
         assert!(stdout_redirect.is_none(), "stdout redirect should be None for 2>");
         let r = stderr_redirect.expect("stderr redirect should be Some for 2>");
         assert_eq!(r.mode, RedirectMode::Overwrite);
@@ -656,7 +714,8 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_2gtgt() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"exit notanumber 2>> err.txt");
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"exit notanumber 2>> err.txt").unwrap();
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["notanumber"]
@@ -669,9 +728,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_last_wins_stdout() {
-        // When `>` and `>>` both appear for stdout, the last operator wins.
-        let (_, args, stdout_redirect, _) = parse(b"echo hi > first.txt >> last.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hi"]);
+        let (_, args, stdout_redirect, _) =
+            parse(b"echo hi > first.txt >> last.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hi"]
+        );
         let r = stdout_redirect.expect("stdout redirect should be Some");
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("last.txt"));
@@ -679,9 +741,12 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_last_wins_stderr() {
-        // When `2>` and `2>>` both appear for stderr, the last operator wins.
-        let (_, args, _, stderr_redirect) = parse(b"echo hi 2> first.txt 2>> last.txt");
-        assert_eq!(args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(), vec!["hi"]);
+        let (_, args, _, stderr_redirect) =
+            parse(b"echo hi 2> first.txt 2>> last.txt").unwrap();
+        assert_eq!(
+            args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
+            vec!["hi"]
+        );
         let r = stderr_redirect.expect("stderr redirect should be Some");
         assert_eq!(r.mode, RedirectMode::Append);
         assert_eq!(r.target, std::path::PathBuf::from("last.txt"));
@@ -689,8 +754,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_trailing_operator_kept_as_arg() {
-        // A trailing `>` with no following filename should be preserved as a literal argument.
-        let (_, args, stdout_redirect, _) = parse(b"echo >");
+        let (_, args, stdout_redirect, _) = parse(b"echo >").unwrap();
         assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -701,8 +765,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_trailing_gtgt_kept_as_arg() {
-        // A trailing `>>` with no following filename should be preserved as a literal argument.
-        let (_, args, stdout_redirect, _) = parse(b"echo >>");
+        let (_, args, stdout_redirect, _) = parse(b"echo >>").unwrap();
         assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -713,8 +776,7 @@ mod tests {
 
     #[test]
     fn test_parse_stderr_redirect_trailing_operator_kept_as_arg() {
-        // A trailing `2>` with no following filename should be preserved as a literal argument.
-        let (_, args, _, stderr_redirect) = parse(b"echo 2>");
+        let (_, args, _, stderr_redirect) = parse(b"echo 2>").unwrap();
         assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -725,9 +787,11 @@ mod tests {
 
     #[test]
     fn test_parse_mixed_quoted_operator_not_a_redirect() {
-        // 1'>' has bytes `1>` but QuoteStyle::Mixed — must not be treated as a redirect.
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo 1'>'");
-        assert!(stdout_redirect.is_none(), "mixed-quoted 1'>' must not trigger a redirect");
+        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo 1'>'").unwrap();
+        assert!(
+            stdout_redirect.is_none(),
+            "mixed-quoted 1'>' must not trigger a redirect"
+        );
         assert!(stderr_redirect.is_none());
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -737,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_parse_stderr_append_redirect_trailing_operator_kept_as_arg() {
-        let (_, args, _, stderr_redirect) = parse(b"echo 2>>");
+        let (_, args, _, stderr_redirect) = parse(b"echo 2>>").unwrap();
         assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -748,7 +812,8 @@ mod tests {
 
     #[test]
     fn test_parse_no_redirect() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo hello world");
+        let (_, args, stdout_redirect, stderr_redirect) =
+            parse(b"echo hello world").unwrap();
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello", "world"]
