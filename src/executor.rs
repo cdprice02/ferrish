@@ -152,14 +152,13 @@ pub fn execute_pipeline(
 
         if is_last {
             // Final stage: write to the shell's real I/O (honouring any redirect).
-            if let Some(buf) = stdin_buf.take() {
+            return if let Some(buf) = stdin_buf.take() {
                 execute_stage_with_stdin(
                     command, args, io, ctx, stdout_redirect, stderr_redirect, &buf,
-                )?;
+                )
             } else {
-                execute(command, args, io, ctx, stdout_redirect, stderr_redirect)?;
-            }
-            return Ok(None);
+                execute(command, args, io, ctx, stdout_redirect, stderr_redirect)
+            };
         }
 
         // Intermediate stage: capture stdout for the next stage.

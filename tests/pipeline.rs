@@ -66,3 +66,21 @@ fn test_pipeline_double_quoted_pipe_is_literal() {
         .run();
     result.assert_output_contains("foo | bar");
 }
+
+#[test]
+fn test_pipeline_pwd_piped_to_grep() {
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("pwd | grep /")
+        .run();
+    result.assert_output_contains("/");
+}
+
+#[test]
+fn test_pipeline_last_stage_exit_code_propagates() {
+    // `exit 0` as the last stage of a pipeline must cause the shell to exit.
+    let result = ShellTest::new()
+        .script("echo foo | exit 0")
+        .run();
+    assert_eq!(result.exit_code(), 0);
+}
