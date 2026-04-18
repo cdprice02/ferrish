@@ -123,11 +123,11 @@ pub fn execute(
 /// Execute a [`Pipeline`] (one or more `|`-connected commands).
 ///
 /// A single-stage pipeline delegates to [`execute`] unchanged.  A multi-stage
-/// pipeline runs each stage serially: the stdout of stage *i* is collected into
-/// a buffer, then fed as the stdin of stage *i+1*.  For executable stages the
-/// connection uses OS pipes; for built-in stages the buffer is wired via an
-/// in-memory cursor.  The last stage's stdout is written to `io` (or to a file
-/// if a per-stage redirect is present).
+/// pipeline runs each stage serially: the stdout of stage *i* is buffered then
+/// fed as stdin to stage *i+1*.  For executable stages the data is written into
+/// the child's stdin pipe; built-in stages do not currently consume piped stdin
+/// data.  The last stage's stdout is written to `io` (or to a file if a
+/// per-stage redirect is present).
 ///
 /// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(

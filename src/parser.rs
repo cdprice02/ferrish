@@ -65,8 +65,8 @@ fn parse_segment(buffer: &[u8]) -> Result<PipelineStage, ShellError> {
     Ok((command, args, stdout_redirect, stderr_redirect))
 }
 
-/// Split `buffer` on unquoted `|` characters, returning a `Vec` of raw
-/// byte slices — one per pipeline segment.  Quoted `|` characters are never
+/// Split `buffer` on unquoted `|` characters, returning a `Vec` of owned
+/// byte buffers — one per pipeline segment.  Quoted `|` characters are never
 /// treated as separators.
 fn split_pipeline_segments(buffer: &[u8]) -> Vec<Vec<u8>> {
     let mut segments: Vec<Vec<u8>> = Vec::new();

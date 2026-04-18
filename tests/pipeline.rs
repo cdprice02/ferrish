@@ -2,6 +2,7 @@ mod harness;
 
 use harness::ShellTest;
 
+#[cfg(unix)]
 #[test]
 fn test_basic_pipeline_echo_cat() {
     let result = ShellTest::new()
@@ -10,6 +11,7 @@ fn test_basic_pipeline_echo_cat() {
     result.assert_output_contains("hello");
 }
 
+#[cfg(unix)]
 #[test]
 fn test_pipeline_with_wc_l() {
     // `echo` produces one line; `wc -l` should report 1.
@@ -24,6 +26,7 @@ fn test_pipeline_with_wc_l() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn test_pipeline_builtin_output_piped_to_cat() {
     let result = ShellTest::new()
@@ -32,6 +35,7 @@ fn test_pipeline_builtin_output_piped_to_cat() {
     result.assert_output_contains("piped content");
 }
 
+#[cfg(unix)]
 #[test]
 fn test_pipeline_last_stage_redirect() {
     let result = ShellTest::new()
@@ -67,6 +71,7 @@ fn test_pipeline_double_quoted_pipe_is_literal() {
     result.assert_output_contains("foo | bar");
 }
 
+#[cfg(unix)]
 #[test]
 fn test_pipeline_pwd_piped_to_grep() {
     let result = ShellTest::new()
