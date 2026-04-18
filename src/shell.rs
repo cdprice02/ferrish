@@ -76,21 +76,15 @@ impl<IO: ShellIo> Shell<IO> {
             }
 
             let make_src = || String::from_utf8_lossy(buffer).into_owned();
-            let (command, args, stdout_redirect, stderr_redirect) =
-                match parser::parse(buffer) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let report = miette::Report::new(e).with_source_code(make_src());
-                        writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
-                        continue;
-                    }
-                };
-            match self.execute_command(
-                command,
-                args,
-                stdout_redirect,
-                stderr_redirect,
-            ) {
+            let pipeline = match parser::parse(buffer) {
+                Ok(r) => r,
+                Err(e) => {
+                    let report = miette::Report::new(e).with_source_code(make_src());
+                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
+                    continue;
+                }
+            };
+            match self.execute_pipeline(pipeline) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
@@ -116,14 +110,11 @@ impl<IO: ShellIo> Shell<IO> {
                 continue;
             }
 
-            let (command, args, stdout_redirect, stderr_redirect) = parser::parse(buffer)
-                .map_err(|e| {
-                    miette::Report::new(e)
-                        .with_source_code(String::from_utf8_lossy(buffer).into_owned())
-                })?;
-            if let Some(exit_code) =
-                self.execute_command(command, args, stdout_redirect, stderr_redirect)?
-            {
+            let pipeline = parser::parse(buffer).map_err(|e| {
+                miette::Report::new(e)
+                    .with_source_code(String::from_utf8_lossy(buffer).into_owned())
+            })?;
+            if let Some(exit_code) = self.execute_pipeline(pipeline)? {
                 return Ok(exit_code);
             }
         }
@@ -131,7 +122,18 @@ impl<IO: ShellIo> Shell<IO> {
         Ok(ExitCode::SUCCESS)
     }
 
+    /// Execute a parsed [`Pipeline`], returning an optional exit code.
+    pub fn execute_pipeline(
+        &mut self,
+        pipeline: parser::Pipeline,
+    ) -> ShellResult<Option<ExitCode>> {
+        executor::execute_pipeline(pipeline, &mut *self.io.borrow_mut(), &mut self.ctx)
+    }
+
     /// Execute a single parsed command, returning an optional exit code.
+    ///
+    /// Calls [`executor::execute`] directly; for callers that already hold a
+    /// decomposed command and do not need pipeline machinery.
     pub fn execute_command(
         &mut self,
         command: Command,

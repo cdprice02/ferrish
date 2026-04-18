@@ -14,6 +14,7 @@ use crate::{
     exit::ExitCode,
     fs,
     io::ShellIo,
+    parser::Pipeline,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
 };
 
@@ -119,6 +120,162 @@ pub fn execute(
     }
 }
 
+/// Execute a [`Pipeline`] (one or more `|`-connected commands).
+///
+/// A single-stage pipeline delegates to [`execute`] unchanged.  A multi-stage
+/// pipeline runs each stage serially: the stdout of stage *i* is buffered then
+/// fed as stdin to stage *i+1*.  For executable stages the data is written into
+/// the child's stdin pipe; built-in stages do not currently consume piped stdin
+/// data.  The last stage's stdout is written to `io` (or to a file if a
+/// per-stage redirect is present).
+///
+/// Stdout buffering is intentional for this implementation — issue #28 will
+/// replace it with OS-level streaming pipes between concurrent processes.
+///
+/// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
+pub fn execute_pipeline(
+    pipeline: Pipeline,
+    io: &mut impl ShellIo,
+    ctx: &mut ShellCtx,
+) -> ShellResult<Option<ExitCode>> {
+    // Fast path: no pipe operators.
+    if pipeline.len() == 1 {
+        let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
+        return execute(cmd, args, io, ctx, stdout_redir, stderr_redir);
+    }
+
+    // Multi-stage: carry the previous stage's captured stdout forward.
+    let mut stdin_buf: Option<Vec<u8>> = None;
+    let last_idx = pipeline.len() - 1;
+
+    for (i, (command, args, stdout_redirect, stderr_redirect)) in pipeline.into_iter().enumerate() {
+        let is_last = i == last_idx;
+
+        if is_last {
+            // Final stage: write to the shell's real I/O (honouring any redirect).
+            return if let Some(buf) = stdin_buf.take() {
+                execute_stage_with_stdin(
+                    command, args, io, ctx, stdout_redirect, stderr_redirect, &buf,
+                )
+            } else {
+                execute(command, args, io, ctx, stdout_redirect, stderr_redirect)
+            };
+        }
+
+        // Intermediate stage: capture stdout for the next stage.
+        // POSIX: if this stage has a stdout redirect (`cmd > f | next`), honour
+        // it — write to the file and pass empty stdin to the next stage.
+        // Pass `prev` as `Option<&[u8]>`: `None` on the first stage so the
+        // command can inherit terminal stdin; `Some(&[])` on subsequent stages
+        // so a command after a redirect gets a closed (empty) pipe, not the terminal.
+        let mut out_buf: Vec<u8> = Vec::new();
+        let prev = stdin_buf.take();
+        execute_stage_capture(
+            command, args, io, ctx, stdout_redirect, stderr_redirect, prev.as_deref(), &mut out_buf,
+        )?;
+        stdin_buf = Some(out_buf);
+    }
+
+    Ok(None)
+}
+
+/// Run one intermediate pipeline stage, feeding `stdin_data` as the command's
+/// stdin.  If `stdout_redirect` is `Some`, stdout goes to that file (POSIX
+/// semantics); otherwise it is captured into `out_buf` for the next stage.
+/// Stderr honours `stderr_redirect` or falls back to `io`.
+#[allow(clippy::too_many_arguments)]
+fn execute_stage_capture(
+    command: Command,
+    args: Args,
+    io: &mut impl ShellIo,
+    ctx: &mut ShellCtx,
+    stdout_redirect: Option<StdoutRedirection>,
+    stderr_redirect: Option<StderrRedirection>,
+    stdin_data: Option<&[u8]>,
+    out_buf: &mut Vec<u8>,
+) -> ShellResult<Option<ExitCode>> {
+    let mut stdout_file: Option<std::fs::File> = stdout_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+
+    let mut stderr_file: Option<std::fs::File> = stderr_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+
+    let out_writer: &mut dyn std::io::Write = match stdout_file.as_mut() {
+        Some(f) => f,
+        None => out_buf,
+    };
+    let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
+        Some(f) => f,
+        None => io.err_writer(),
+    };
+
+    execute_stage_inner(command, args, out_writer, err_writer, ctx, stdin_data)
+}
+
+/// Run the last pipeline stage, feeding `stdin_data` and honouring redirects.
+fn execute_stage_with_stdin(
+    command: Command,
+    args: Args,
+    io: &mut impl ShellIo,
+    ctx: &mut ShellCtx,
+    stdout_redirect: Option<StdoutRedirection>,
+    stderr_redirect: Option<StderrRedirection>,
+    stdin_data: &[u8],
+) -> ShellResult<Option<ExitCode>> {
+    let mut stdout_file: Option<std::fs::File> = stdout_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+
+    let mut stderr_file: Option<std::fs::File> = stderr_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+
+    let (io_out, io_err) = io.writers();
+    let out_writer: &mut dyn std::io::Write = match stdout_file.as_mut() {
+        Some(f) => f,
+        None => io_out,
+    };
+    let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
+        Some(f) => f,
+        None => io_err,
+    };
+
+    execute_stage_inner(command, args, out_writer, err_writer, ctx, Some(stdin_data))
+}
+
+/// Core dispatch for a pipeline stage: routes to builtin or executable, feeding
+/// `stdin_data` (if any) as the command's standard input.
+fn execute_stage_inner(
+    command: Command,
+    args: Args,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    ctx: &mut ShellCtx,
+    stdin_data: Option<&[u8]>,
+) -> ShellResult<Option<ExitCode>> {
+    let result = match &command {
+        Command::BuiltIn(builtin) => {
+            // Builtins don't consume stdin from a pipe — they ignore it.
+            execute_builtin(builtin, args, out, err, ctx)
+        }
+        Command::Executable(executable) => {
+            execute_executable(executable, args, out, err, ctx, stdin_data)
+        }
+        Command::Unrecognized(cmd) => {
+            return Err(ShellError::CommandNotFound {
+                name: String::from_utf8_lossy(cmd).into_owned(),
+            })
+        }
+    };
+    result.map_err(|e| ShellError::InCommand { command, source: Box::new(e) })
+}
+
 /// Core dispatch: all output goes to the provided `out` and `err` writers.
 ///
 /// This separation makes it possible to redirect stdout to a file while keeping
@@ -132,7 +289,7 @@ fn execute_with_writers(
 ) -> ShellResult<Option<ExitCode>> {
     let result = match &command {
         Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
-        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
+        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx, None),
         Command::Unrecognized(cmd) => {
             return Err(ShellError::CommandNotFound {
                 name: String::from_utf8_lossy(cmd).into_owned(),
@@ -244,7 +401,9 @@ fn execute_executable(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
     ctx: &ShellCtx,
+    stdin_data: Option<&[u8]>,
 ) -> ShellResult<Option<ExitCode>> {
+    use std::io::Write as _;
     use std::process::Stdio;
     use std::thread;
 
@@ -252,17 +411,33 @@ fn execute_executable(
     let mut child = std::process::Command::new(executable.file_path())
         .args(args)
         .current_dir(&ctx.cwd)
+        .stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(ShellError::ExecutionFailed)?;
 
-    // Drain both pipes concurrently on separate threads to avoid deadlock:
-    // if the child fills one pipe's buffer while we are blocked reading the
-    // other, neither side can make progress.  `ChildStdout`/`ChildStderr` are
-    // `Send`, so they can be moved into threads safely.  We accumulate bytes
-    // into `Vec<u8>` and write them into the writers after joining — keeping
-    // the `?Send` writers exclusively on the calling thread.
+    // Spawn a stdin writer before draining stdout/stderr to avoid deadlock:
+    // the child may fill its stdout buffer before reading all stdin, so we
+    // must drain both concurrently.  `ChildStdin`/`ChildStdout`/`ChildStderr`
+    // are `Send`, so they can be moved into threads safely.
+    let stdin_thread = stdin_data
+        .zip(child.stdin.take())
+        .map(|(data, mut child_stdin)| {
+            let data = data.to_vec();
+            thread::spawn(move || -> std::io::Result<()> {
+                // BrokenPipe means the child exited before reading all stdin — treat
+                // as success so a fast downstream command (e.g. `head -1`) doesn't
+                // surface a spurious I/O error.
+                if let Err(e) = child_stdin.write_all(&data)
+                    && e.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    return Err(e);
+                }
+                Ok(()) // drop closes the pipe
+            })
+        });
+
     let stdout_thread = child.stdout.take().map(|mut pipe| {
         thread::spawn(move || -> std::io::Result<Vec<u8>> {
             let mut buf = Vec::new();
@@ -281,7 +456,13 @@ fn execute_executable(
     // Always wait on the child so it is reaped even when I/O copy fails.
     let status = child.wait().map_err(ShellError::ExecutionFailed)?;
 
-    // Collect thread results; propagate the first I/O error encountered.
+    if let Some(handle) = stdin_thread {
+        handle
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("stdin thread panicked")))
+            .map_err(ShellError::Io)?;
+    }
+
     if let Some(handle) = stdout_thread {
         let bytes = join_io_thread(handle, "stdout")?;
         out.write_all(&bytes)?;
