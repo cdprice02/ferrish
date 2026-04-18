@@ -11,8 +11,20 @@ use crate::env::get_path_files;
 use crate::error::ShellError;
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
-/// Parse a raw input line into a [`Command`], its argument list, an optional
-/// stdout [`Redirection`], and an optional stderr [`Redirection`].
+/// One stage of a pipeline: the command to run, its arguments, and any
+/// per-stage redirections.
+pub type PipelineStage = (Command, Args, Option<StdoutRedirection>, Option<StderrRedirection>);
+
+/// A parsed pipeline — one [`PipelineStage`] per `|`-separated segment.
+///
+/// A single command with no `|` is represented as a `Vec` of length 1.
+pub type Pipeline = Vec<PipelineStage>;
+
+/// Parse a raw input line into a [`Pipeline`].
+///
+/// The input is first split on unquoted `|` characters into segments; each
+/// segment is then parsed into a [`PipelineStage`] exactly as a standalone
+/// command would be.
 ///
 /// Recognised redirect operators and their meanings:
 ///
@@ -26,17 +38,18 @@ use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 /// When the same fd appears more than once, the **last** operator wins.
 /// Only unquoted redirect operators are recognised; an operator character that
 /// appears inside quotes is treated as a literal argument character.
-pub fn parse(
-    buffer: &[u8],
-) -> Result<
-    (
-        Command,
-        Args,
-        Option<StdoutRedirection>,
-        Option<StderrRedirection>,
-    ),
-    ShellError,
-> {
+pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
+    let segments = split_pipeline_segments(buffer);
+    let mut pipeline = Vec::with_capacity(segments.len());
+    for segment in segments {
+        pipeline.push(parse_segment(&segment)?);
+    }
+    Ok(pipeline)
+}
+
+/// Parse a single pipeline segment (bytes between `|` operators) into a
+/// [`PipelineStage`].
+fn parse_segment(buffer: &[u8]) -> Result<PipelineStage, ShellError> {
     let (command, raw_args) = split_command_and_args(buffer)?;
     let command = parse_command(&command);
 
@@ -50,6 +63,59 @@ pub fn parse(
         })
         .collect();
     Ok((command, args, stdout_redirect, stderr_redirect))
+}
+
+/// Split `buffer` on unquoted `|` characters, returning a `Vec` of raw
+/// byte slices — one per pipeline segment.  Quoted `|` characters are never
+/// treated as separators.
+fn split_pipeline_segments(buffer: &[u8]) -> Vec<Vec<u8>> {
+    let mut segments: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut i = 0;
+
+    while i < buffer.len() {
+        let byte = buffer[i];
+        if in_single_quote {
+            if byte == b'\'' {
+                in_single_quote = false;
+            }
+            current.push(byte);
+        } else if in_double_quote {
+            if byte == b'"' {
+                in_double_quote = false;
+            } else if byte == b'\\' && i + 1 < buffer.len() {
+                // Keep the backslash and next char so `split_command_and_args`
+                // can re-process them correctly per-segment.
+                current.push(byte);
+                i += 1;
+                current.push(buffer[i]);
+                i += 1;
+                continue;
+            }
+            current.push(byte);
+        } else if byte == b'\'' {
+            in_single_quote = true;
+            current.push(byte);
+        } else if byte == b'"' {
+            in_double_quote = true;
+            current.push(byte);
+        } else if byte == b'\\' && i + 1 < buffer.len() {
+            // Outside quotes: consume `\X` as a pair so `|` after `\` is not
+            // treated as a separator (e.g. `echo \| foo` should not split).
+            current.push(byte);
+            i += 1;
+            current.push(buffer[i]);
+        } else if byte == b'|' {
+            segments.push(std::mem::take(&mut current));
+        } else {
+            current.push(byte);
+        }
+        i += 1;
+    }
+    segments.push(current);
+    segments
 }
 
 /// Raw argument token: byte content and its quoting style.
@@ -640,12 +706,19 @@ mod tests {
         assert!(!err.is_fatal());
     }
 
+    // Helper: parse a single-stage command (no `|`) and extract the one stage.
+    fn parse_single(input: &[u8]) -> PipelineStage {
+        let mut pipeline = parse(input).unwrap();
+        assert_eq!(pipeline.len(), 1, "expected exactly one pipeline stage");
+        pipeline.remove(0)
+    }
+
     // --- Redirect extraction tests ---
 
     #[test]
     fn test_parse_redirect_gt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello > out.txt").unwrap();
+            parse_single(b"echo hello > out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -659,7 +732,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_1gt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello 1> out.txt").unwrap();
+            parse_single(b"echo hello 1> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -673,7 +746,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_gtgt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello >> out.txt").unwrap();
+            parse_single(b"echo hello >> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -687,7 +760,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_1gtgt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello 1>> out.txt").unwrap();
+            parse_single(b"echo hello 1>> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -701,7 +774,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_2gt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello 2> err.txt").unwrap();
+            parse_single(b"echo hello 2> err.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -715,7 +788,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_2gtgt() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"exit notanumber 2>> err.txt").unwrap();
+            parse_single(b"exit notanumber 2>> err.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["notanumber"]
@@ -729,7 +802,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_last_wins_stdout() {
         let (_, args, stdout_redirect, _) =
-            parse(b"echo hi > first.txt >> last.txt").unwrap();
+            parse_single(b"echo hi > first.txt >> last.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hi"]
@@ -742,7 +815,7 @@ mod tests {
     #[test]
     fn test_parse_redirect_last_wins_stderr() {
         let (_, args, _, stderr_redirect) =
-            parse(b"echo hi 2> first.txt 2>> last.txt").unwrap();
+            parse_single(b"echo hi 2> first.txt 2>> last.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hi"]
@@ -754,7 +827,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_trailing_operator_kept_as_arg() {
-        let (_, args, stdout_redirect, _) = parse(b"echo >").unwrap();
+        let (_, args, stdout_redirect, _) = parse_single(b"echo >");
         assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -765,7 +838,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_trailing_gtgt_kept_as_arg() {
-        let (_, args, stdout_redirect, _) = parse(b"echo >>").unwrap();
+        let (_, args, stdout_redirect, _) = parse_single(b"echo >>");
         assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -776,7 +849,7 @@ mod tests {
 
     #[test]
     fn test_parse_stderr_redirect_trailing_operator_kept_as_arg() {
-        let (_, args, _, stderr_redirect) = parse(b"echo 2>").unwrap();
+        let (_, args, _, stderr_redirect) = parse_single(b"echo 2>");
         assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -787,7 +860,7 @@ mod tests {
 
     #[test]
     fn test_parse_mixed_quoted_operator_not_a_redirect() {
-        let (_, args, stdout_redirect, stderr_redirect) = parse(b"echo 1'>'").unwrap();
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo 1'>'");
         assert!(
             stdout_redirect.is_none(),
             "mixed-quoted 1'>' must not trigger a redirect"
@@ -801,7 +874,7 @@ mod tests {
 
     #[test]
     fn test_parse_stderr_append_redirect_trailing_operator_kept_as_arg() {
-        let (_, args, _, stderr_redirect) = parse(b"echo 2>>").unwrap();
+        let (_, args, _, stderr_redirect) = parse_single(b"echo 2>>");
         assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
@@ -813,12 +886,66 @@ mod tests {
     #[test]
     fn test_parse_no_redirect() {
         let (_, args, stdout_redirect, stderr_redirect) =
-            parse(b"echo hello world").unwrap();
+            parse_single(b"echo hello world");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello", "world"]
         );
         assert!(stdout_redirect.is_none());
         assert!(stderr_redirect.is_none());
+    }
+
+    // --- Pipeline splitting tests ---
+
+    #[test]
+    fn test_pipeline_single_command_gives_one_stage() {
+        let p = parse(b"echo hello").unwrap();
+        assert_eq!(p.len(), 1);
+    }
+
+    #[test]
+    fn test_pipeline_two_commands_gives_two_stages() {
+        let p = parse(b"echo foo | cat").unwrap();
+        assert_eq!(p.len(), 2);
+        let (cmd0, args0, _, _) = &p[0];
+        let (cmd1, args1, _, _) = &p[1];
+        assert_eq!(cmd0.to_string(), "echo");
+        assert_eq!(
+            args0.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec!["foo"]
+        );
+        assert_eq!(cmd1.to_string(), "cat");
+        assert!(args1.is_empty());
+    }
+
+    #[test]
+    fn test_pipeline_quoted_pipe_is_not_separator() {
+        let p = parse(b"echo 'foo | bar'").unwrap();
+        assert_eq!(p.len(), 1, "quoted | must not split the pipeline");
+        let (_, args, _, _) = &p[0];
+        assert_eq!(
+            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec!["foo | bar"]
+        );
+    }
+
+    #[test]
+    fn test_pipeline_double_quoted_pipe_is_not_separator() {
+        let p = parse(b"echo \"foo | bar\"").unwrap();
+        assert_eq!(p.len(), 1, "double-quoted | must not split the pipeline");
+        let (_, args, _, _) = &p[0];
+        assert_eq!(
+            args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            vec!["foo | bar"]
+        );
+    }
+
+    #[test]
+    fn test_pipeline_last_stage_redirect() {
+        let p = parse(b"echo foo | cat > out.txt").unwrap();
+        assert_eq!(p.len(), 2);
+        let (_, _, stdout_redir, _) = &p[1];
+        let r = stdout_redir.as_ref().expect("last stage should have redirect");
+        assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
     }
 }
