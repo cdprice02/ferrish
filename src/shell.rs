@@ -132,8 +132,8 @@ impl<IO: ShellIo> Shell<IO> {
 
     /// Execute a single parsed command, returning an optional exit code.
     ///
-    /// This is a convenience wrapper around [`execute_pipeline`] for callers
-    /// that already have a decomposed command.
+    /// Calls [`executor::execute`] directly; for callers that already hold a
+    /// decomposed command and do not need pipeline machinery.
     pub fn execute_command(
         &mut self,
         command: Command,

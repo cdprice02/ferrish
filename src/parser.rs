@@ -42,9 +42,24 @@ pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
     let segments = split_pipeline_segments(buffer);
     let mut pipeline = Vec::with_capacity(segments.len());
     for segment in segments {
-        pipeline.push(parse_segment(segment)?);
+        // Compute the segment's byte offset within the original buffer via
+        // pointer arithmetic so that error spans are relative to the full line.
+        let offset = segment.as_ptr() as usize - buffer.as_ptr() as usize;
+        pipeline.push(parse_segment(segment).map_err(|e| adjust_span(e, offset))?);
     }
     Ok(pipeline)
+}
+
+/// Shift a [`ShellError::UnclosedQuote`] span by `delta` bytes so it is
+/// relative to the full input line rather than the per-segment slice.
+fn adjust_span(error: ShellError, delta: usize) -> ShellError {
+    match error {
+        ShellError::UnclosedQuote { style, span } => ShellError::UnclosedQuote {
+            style,
+            span: SourceSpan::from((span.offset() + delta, span.len())),
+        },
+        other => other,
+    }
 }
 
 /// Parse a single pipeline segment (bytes between `|` operators) into a

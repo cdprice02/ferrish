@@ -306,8 +306,15 @@ fn execute_executable_with_stdin(
     if let (Some(data), Some(mut child_stdin)) = (stdin_data, child.stdin.take()) {
         let data = data.to_vec();
         let stdin_thread = thread::spawn(move || -> std::io::Result<()> {
-            child_stdin.write_all(&data)?;
-            Ok(()) // drop flushes and closes the pipe
+            // BrokenPipe means the child exited before reading all stdin — treat
+            // as success so a fast downstream command (e.g. `head -1`) doesn't
+            // surface a spurious I/O error.
+            if let Err(e) = child_stdin.write_all(&data)
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(e);
+            }
+            Ok(()) // drop closes the pipe
         });
         // Drain stdout/stderr while stdin is being written to avoid deadlock.
         let stdout_thread = child.stdout.take().map(|mut pipe| {
