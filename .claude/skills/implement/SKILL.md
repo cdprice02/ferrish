@@ -24,15 +24,6 @@ Use `mcp__plugin_github_github__issue_read` (method: `get`) for the issue body a
 
 If the issue is genuinely ambiguous after reading it, ask one focused question before starting. Don't guess and implement the wrong thing.
 
-### 1.5 Refine with `/ultraplan` (conditional)
-
-If the issue is non-trivial, run `/ultraplan` to refine the approach before touching code. Non-trivial means any of:
-- Spans multiple modules (e.g., parser + executor + builtin)
-- Scope is ambiguous or has competing interpretations after reading the body and comments
-- Introduces an architectural change to `parser`, `executor`, `ShellIo`, or `ShellCtx`
-
-Skip for typo fixes, single-file bug fixes, or mechanical chores. If `/ultraplan` fails (network, cloud env not ready), proceed without it — do not block.
-
 ### 2. Plan the branch name
 
 - Prefix by label: `fix/` for bug, `feat/` for enhancement, `chore/` for docs/infra/refactor

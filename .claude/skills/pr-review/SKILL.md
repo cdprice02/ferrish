@@ -5,7 +5,7 @@ description: Respond to review comments on a ferrish pull request — fetches al
 
 # PR Review Response
 
-Addresses review comments on a single ferrish PR end-to-end. Mechanical fixes get implemented and pushed. Design questions get a reasoned reply. Anything requiring human judgment gets surfaced to you.
+Addresses review comments on a single ferrish PR end-to-end. Mechanical fixes get implemented and pushed. Design questions are surfaced to you with options before any reply is posted. Anything requiring human judgment gets surfaced to you.
 
 ## Repo constants
 
@@ -27,25 +27,43 @@ Use `mcp__plugin_github_github__pull_request_read`:
 
 Focus on unresolved threads (`is_resolved: false`). Skip threads that are already resolved or where the author has already replied with a fix.
 
-### 1.5 Run `/ultrareview <PR#>`
-
-In addition to the fetched human review comments, run `/ultrareview <PR#>` to surface issues the human reviewer didn't flag (subtle bugs, missed edge cases, inconsistencies with ferrish conventions).
-
-Merge the cloud reviewer's findings into Step 2's classification table alongside the human comments:
-- Mechanical items → fold into the same fix pass
-- Design items → hold for discussion; don't silently change semantics
-
-If `/ultrareview` fails or returns nothing useful, proceed with human comments only.
-
-### 2. Classify each comment (from both human reviewers and `/ultrareview`)
+### 2. Classify each comment
 
 | Class | Criteria | Action |
 |-------|----------|--------|
 | **Mechanical** | Naming, formatting, missing test, trivial refactor, typo | Fix in code, push, reply |
-| **Design question** | Alternative approach, architectural concern, "why not X?" | Reply with reasoning via MCP; update code if the reviewer's point is valid |
-| **Needs human judgment** | Product decision, security concern, scope change, contradicts a prior decision | Surface to user with full comment text |
+| **Design question** | Alternative approach, architectural concern, "why not X?" | Surface to user with options — see Step 2.5 |
+| **Needs human judgment** | Product decision, security concern, scope change, contradicts a prior decision | Surface to user with full comment text — see Step 8 |
 
 When in doubt between mechanical and design, treat it as design — don't silently change semantics.
+
+### 2.5 Surface design questions to user before acting
+
+For each design question, present it to the user before posting any reply or changing any code:
+
+```
+PR #N — design question from @<reviewer> on <file>:<line>
+"<comment text>"
+
+My read: <one sentence on what the reviewer is asking and why it matters>
+
+Options:
+A. <approach — e.g., keep current approach> — <one-sentence rationale>
+B. <alternative approach> — <one-sentence rationale>
+[C. ...if a third option exists]
+
+How would you like to respond to the reviewer?
+  1. Decide now — tell me which option (A/B/C) and I'll implement + reply
+  2. Open the question to the reviewer — I'll post the options above as a comment and leave the thread unresolved for further discussion
+```
+
+Wait for the user's direction before writing any code or posting any comment for this thread.
+
+Once the user decides:
+- **Option 1 chosen**: implement the chosen approach, push, then reply and resolve the thread per Step 7
+- **Option 2 chosen**: post the options summary as a PR comment via `mcp__plugin_github_github__add_reply_to_pull_request_comment`, leave the thread unresolved, and note it in the final report as "awaiting reviewer input"
+
+Handle all design questions this way before proceeding to mechanical fixes in Steps 3–6.
 
 ### 3. Set up the worktree
 
@@ -99,13 +117,10 @@ Then resolve the thread. The thread's `node_id` is returned by `get_review_comme
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread node_id>"}) { thread { isResolved } } }'
 ```
 
-For design questions where the original approach is sound, reply and resolve:
-> Keeping the current approach because <reason>. <Optional: what would need to change for the alternative to be preferable.>
+For design questions where the user chose an approach and it was implemented, reply and resolve:
+> Went with <approach> — <one sentence on what changed>. <commit SHA short>
 
-For design questions where the reviewer's point is valid and code was updated, reply and resolve:
-> Good call — updated in <commit SHA short>. <One sentence on what changed.>
-
-**Do not resolve** threads for `Needs human judgment` items or for design replies that explicitly invite further discussion — leave those open for the conversation to continue.
+**Do not resolve** threads where Option 2 was chosen (open question to reviewer), `Needs human judgment` items, or threads explicitly inviting further discussion.
 
 ### 8. Surface judgment calls
 
@@ -125,7 +140,8 @@ Wait for direction before taking any action on these.
 Return a summary:
 ```
 PR #N review response complete.
-- Mechanical fixes: N (pushed, threads replied)
-- Design replies: M (no code change)
-- Awaiting your input: K (listed above)
+- Mechanical fixes: N (pushed, threads replied and resolved)
+- Design decisions implemented: M (user chose approach, pushed, threads resolved)
+- Awaiting reviewer input: K (options posted to PR, threads left open)
+- Awaiting your input: J (listed above)
 ```

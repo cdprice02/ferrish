@@ -15,11 +15,9 @@ Orchestrates end-to-end resolution of all open issues in a milestone. You are th
 
 Run `/triage` before starting a milestone burndown to ensure all issues are labeled, scoped to the right milestone, and free of unresolved duplicates. Milestone assumes issues are already organized — it does not re-triage mid-run.
 
-For a PR with a large volume of design-level review comments, consider pausing the monitoring loop and running `/pr-review <N>` directly for more thorough handling before resuming.
-
 ## Tool priority
 
-Use `mcp__plugin_github_github__*` for all GitHub operations (issue listing, PR status, CI checks, review comment replies). Fall back to `gh` CLI via Bash only when a specific operation is unavailable through the MCP.
+Use `mcp__plugin_github_github__*` for all GitHub operations (issue listing, PR status, CI checks). Fall back to `gh` CLI via Bash only when a specific operation is unavailable through the MCP.
 
 ## Phase 1: Survey the milestone
 
@@ -32,16 +30,9 @@ List every open issue. For each one note: title, labels, any mentioned dependenc
 
 Build a simple dependency map. Issues with no blockers are the first wave; issues that depend on others wait until their blockers have merged PRs.
 
-If the milestone is large (5+ open issues) or the dependency map shows cross-module interactions (e.g., parser changes feeding executor changes), refine the wave plan with `/ultraplan` before dispatching subagents. Skip for small milestones or milestones of purely independent issues. If `/ultraplan` fails, proceed without it.
-
 ## Phase 2: First wave — implement in parallel
 
-For all unblocked issues, spawn one subagent per issue using the `implement` skill. Each agent must:
-- Work in its own worktree (`.claude/worktrees/issue-<N>`)
-- Produce a PR — not a plan
-- Include `Closes #<N>` in the PR body
-
-Spawn them all in the same turn so they run concurrently.
+For all unblocked issues, spawn one subagent per issue using the `implement` skill. Spawn them all in the same turn so they run concurrently.
 
 Brief each subagent with:
 ```
@@ -52,7 +43,7 @@ Deliver a PR URL. Do not return a plan.
 
 ## Phase 3: Monitor and iterate
 
-After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (methods: `get`, `get_check_runs`, `get_review_comments`, `get_reviews`). Use `get_reviews` to determine whether a PR is approved, has changes requested, or is still awaiting review.
+After the first wave completes, check the status of every PR using `mcp__plugin_github_github__pull_request_read` (methods: `get`, `get_check_runs`, `get_review_comments`, `get_reviews`).
 
 For each PR:
 
@@ -60,16 +51,19 @@ For each PR:
 |-------|--------|
 | CI pending / running | Wait; revisit next cycle |
 | CI failing | Read failure output via MCP, fix in the worktree, push again |
-| Review comments present (unresolved) | Classify each comment (see below), address mechanical ones. Skip threads where `is_resolved: true`. |
+| Review comments present (unresolved) | Spawn a subagent using the `pr-review` skill — see below |
 | Merge conflict | Rebase the branch onto main, re-verify, push |
-| CI passing, review pending | Run `/ultrareview <PR#>` as a pre-review gate. Apply any mechanical findings, push, and re-verify CI. Once clean, leave idle — awaiting code owner review. Do not merge. If `/ultrareview` fails, skip it and leave the PR as-is. |
+| CI passing, review pending | Leave idle — awaiting code owner review. Do not merge. |
 | CI passing, review approved | Surface to user: "PR #N has been approved and is ready for you to merge." |
 
-### Classifying review comments
+### Handling review comments
 
-- **Mechanical** (naming, formatting, missing test, small refactor): fix it, push, reply to the thread via `mcp__plugin_github_github__add_reply_to_pull_request_comment` with a one-line summary of what changed
-- **Design question** (alternative approach, architectural concern): reply with a reasoned response via MCP; if you're confident in the original approach, defend it briefly; if the reviewer raises a valid point, update the code
-- **Needs human judgment** (product decision, scope change, security concern): surface it to the user with the PR number and comment text
+When a PR has unresolved review comments, delegate to the `pr-review` skill rather than handling comments inline. Brief the subagent:
+```
+Use the pr-review skill to respond to review comments on PR #<N>.
+```
+
+The `pr-review` skill handles classification, mechanical fixes, and the design-question dialogue with the user. Resume monitoring this PR after the subagent completes. If the volume of design questions requires extended back-and-forth with the user, pause the monitoring loop and let `/pr-review <N>` run interactively before resuming.
 
 ## Phase 4: Unblock the next wave
 
