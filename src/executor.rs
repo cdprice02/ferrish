@@ -138,19 +138,17 @@ pub fn execute_pipeline(
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
-    let mut stages = pipeline;
-
     // Fast path: no pipe operators.
-    if stages.len() == 1 {
-        let (cmd, args, stdout_redir, stderr_redir) = stages.remove(0);
+    if pipeline.len() == 1 {
+        let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
         return execute(cmd, args, io, ctx, stdout_redir, stderr_redir);
     }
 
     // Multi-stage: carry the previous stage's captured stdout forward.
     let mut stdin_buf: Option<Vec<u8>> = None;
-    let last_idx = stages.len() - 1;
+    let last_idx = pipeline.len() - 1;
 
-    for (i, (command, args, stdout_redirect, stderr_redirect)) in stages.into_iter().enumerate() {
+    for (i, (command, args, stdout_redirect, stderr_redirect)) in pipeline.into_iter().enumerate() {
         let is_last = i == last_idx;
 
         if is_last {
@@ -265,7 +263,7 @@ fn execute_stage_inner(
             execute_builtin(builtin, args, out, err, ctx)
         }
         Command::Executable(executable) => {
-            execute_executable_with_stdin(executable, args, out, err, ctx, stdin_data)
+            execute_executable(executable, args, out, err, ctx, stdin_data)
         }
         Command::Unrecognized(cmd) => {
             return Err(ShellError::CommandNotFound {
@@ -274,117 +272,6 @@ fn execute_stage_inner(
         }
     };
     result.map_err(|e| ShellError::InCommand { command, source: Box::new(e) })
-}
-
-/// Spawn an external command, optionally feeding `stdin_data` into its stdin,
-/// and capturing its stdout/stderr into the provided writers.
-fn execute_executable_with_stdin(
-    executable: &ExecutableCommand,
-    args: Args,
-    out: &mut dyn std::io::Write,
-    err: &mut dyn std::io::Write,
-    ctx: &ShellCtx,
-    stdin_data: Option<&[u8]>,
-) -> ShellResult<Option<ExitCode>> {
-    use std::io::Write as _;
-    use std::process::Stdio;
-    use std::thread;
-
-    let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-    let mut child = std::process::Command::new(executable.file_path())
-        .args(args)
-        .current_dir(&ctx.cwd)
-        .stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::inherit() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(ShellError::ExecutionFailed)?;
-
-    // Feed stdin data if present; do this before draining stdout/stderr to
-    // avoid a potential deadlock where the child blocks on stdout while we
-    // block writing stdin.
-    if let (Some(data), Some(mut child_stdin)) = (stdin_data, child.stdin.take()) {
-        let data = data.to_vec();
-        let stdin_thread = thread::spawn(move || -> std::io::Result<()> {
-            // BrokenPipe means the child exited before reading all stdin — treat
-            // as success so a fast downstream command (e.g. `head -1`) doesn't
-            // surface a spurious I/O error.
-            if let Err(e) = child_stdin.write_all(&data)
-                && e.kind() != std::io::ErrorKind::BrokenPipe
-            {
-                return Err(e);
-            }
-            Ok(()) // drop closes the pipe
-        });
-        // Drain stdout/stderr while stdin is being written to avoid deadlock.
-        let stdout_thread = child.stdout.take().map(|mut pipe| {
-            thread::spawn(move || -> std::io::Result<Vec<u8>> {
-                let mut buf = Vec::new();
-                std::io::copy(&mut pipe, &mut buf)?;
-                Ok(buf)
-            })
-        });
-        let stderr_thread = child.stderr.take().map(|mut pipe| {
-            thread::spawn(move || -> std::io::Result<Vec<u8>> {
-                let mut buf = Vec::new();
-                std::io::copy(&mut pipe, &mut buf)?;
-                Ok(buf)
-            })
-        });
-
-        let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-
-        stdin_thread
-            .join()
-            .unwrap_or_else(|_| Err(std::io::Error::other("stdin thread panicked")))
-            .map_err(ShellError::Io)?;
-
-        if let Some(handle) = stdout_thread {
-            let bytes = join_io_thread(handle, "stdout")?;
-            out.write_all(&bytes)?;
-        }
-        if let Some(handle) = stderr_thread {
-            let bytes = join_io_thread(handle, "stderr")?;
-            err.write_all(&bytes)?;
-        }
-
-        if !status.success() {
-            return Err(ShellError::NonZeroExit(status));
-        }
-    } else {
-        // No stdin data — same as the existing execute_executable path.
-        let stdout_thread = child.stdout.take().map(|mut pipe| {
-            thread::spawn(move || -> std::io::Result<Vec<u8>> {
-                let mut buf = Vec::new();
-                std::io::copy(&mut pipe, &mut buf)?;
-                Ok(buf)
-            })
-        });
-        let stderr_thread = child.stderr.take().map(|mut pipe| {
-            thread::spawn(move || -> std::io::Result<Vec<u8>> {
-                let mut buf = Vec::new();
-                std::io::copy(&mut pipe, &mut buf)?;
-                Ok(buf)
-            })
-        });
-
-        let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-
-        if let Some(handle) = stdout_thread {
-            let bytes = join_io_thread(handle, "stdout")?;
-            out.write_all(&bytes)?;
-        }
-        if let Some(handle) = stderr_thread {
-            let bytes = join_io_thread(handle, "stderr")?;
-            err.write_all(&bytes)?;
-        }
-
-        if !status.success() {
-            return Err(ShellError::NonZeroExit(status));
-        }
-    }
-
-    Ok(None)
 }
 
 /// Core dispatch: all output goes to the provided `out` and `err` writers.
@@ -400,7 +287,7 @@ fn execute_with_writers(
 ) -> ShellResult<Option<ExitCode>> {
     let result = match &command {
         Command::BuiltIn(builtin) => execute_builtin(builtin, args, out, err, ctx),
-        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx),
+        Command::Executable(executable) => execute_executable(executable, args, out, err, ctx, None),
         Command::Unrecognized(cmd) => {
             return Err(ShellError::CommandNotFound {
                 name: String::from_utf8_lossy(cmd).into_owned(),
@@ -512,7 +399,9 @@ fn execute_executable(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
     ctx: &ShellCtx,
+    stdin_data: Option<&[u8]>,
 ) -> ShellResult<Option<ExitCode>> {
+    use std::io::Write as _;
     use std::process::Stdio;
     use std::thread;
 
@@ -520,17 +409,33 @@ fn execute_executable(
     let mut child = std::process::Command::new(executable.file_path())
         .args(args)
         .current_dir(&ctx.cwd)
+        .stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(ShellError::ExecutionFailed)?;
 
-    // Drain both pipes concurrently on separate threads to avoid deadlock:
-    // if the child fills one pipe's buffer while we are blocked reading the
-    // other, neither side can make progress.  `ChildStdout`/`ChildStderr` are
-    // `Send`, so they can be moved into threads safely.  We accumulate bytes
-    // into `Vec<u8>` and write them into the writers after joining — keeping
-    // the `?Send` writers exclusively on the calling thread.
+    // Spawn a stdin writer before draining stdout/stderr to avoid deadlock:
+    // the child may fill its stdout buffer before reading all stdin, so we
+    // must drain both concurrently.  `ChildStdin`/`ChildStdout`/`ChildStderr`
+    // are `Send`, so they can be moved into threads safely.
+    let stdin_thread = stdin_data
+        .zip(child.stdin.take())
+        .map(|(data, mut child_stdin)| {
+            let data = data.to_vec();
+            thread::spawn(move || -> std::io::Result<()> {
+                // BrokenPipe means the child exited before reading all stdin — treat
+                // as success so a fast downstream command (e.g. `head -1`) doesn't
+                // surface a spurious I/O error.
+                if let Err(e) = child_stdin.write_all(&data)
+                    && e.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    return Err(e);
+                }
+                Ok(()) // drop closes the pipe
+            })
+        });
+
     let stdout_thread = child.stdout.take().map(|mut pipe| {
         thread::spawn(move || -> std::io::Result<Vec<u8>> {
             let mut buf = Vec::new();
@@ -549,7 +454,13 @@ fn execute_executable(
     // Always wait on the child so it is reaped even when I/O copy fails.
     let status = child.wait().map_err(ShellError::ExecutionFailed)?;
 
-    // Collect thread results; propagate the first I/O error encountered.
+    if let Some(handle) = stdin_thread {
+        handle
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("stdin thread panicked")))
+            .map_err(ShellError::Io)?;
+    }
+
     if let Some(handle) = stdout_thread {
         let bytes = join_io_thread(handle, "stdout")?;
         out.write_all(&bytes)?;
