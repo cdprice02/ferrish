@@ -165,10 +165,13 @@ pub fn execute_pipeline(
         // Intermediate stage: capture stdout for the next stage.
         // POSIX: if this stage has a stdout redirect (`cmd > f | next`), honour
         // it — write to the file and pass empty stdin to the next stage.
+        // Pass `prev` as `Option<&[u8]>`: `None` on the first stage so the
+        // command can inherit terminal stdin; `Some(&[])` on subsequent stages
+        // so a command after a redirect gets a closed (empty) pipe, not the terminal.
         let mut out_buf: Vec<u8> = Vec::new();
-        let prev = stdin_buf.take().unwrap_or_default();
+        let prev = stdin_buf.take();
         execute_stage_capture(
-            command, args, io, ctx, stdout_redirect, stderr_redirect, &prev, &mut out_buf,
+            command, args, io, ctx, stdout_redirect, stderr_redirect, prev.as_deref(), &mut out_buf,
         )?;
         stdin_buf = Some(out_buf);
     }
@@ -188,7 +191,7 @@ fn execute_stage_capture(
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
-    stdin_data: &[u8],
+    stdin_data: Option<&[u8]>,
     out_buf: &mut Vec<u8>,
 ) -> ShellResult<Option<ExitCode>> {
     let mut stdout_file: Option<std::fs::File> = stdout_redirect
@@ -210,8 +213,7 @@ fn execute_stage_capture(
         None => io.err_writer(),
     };
 
-    let stdin = if stdin_data.is_empty() { None } else { Some(stdin_data) };
-    execute_stage_inner(command, args, out_writer, err_writer, ctx, stdin)
+    execute_stage_inner(command, args, out_writer, err_writer, ctx, stdin_data)
 }
 
 /// Run the last pipeline stage, feeding `stdin_data` and honouring redirects.

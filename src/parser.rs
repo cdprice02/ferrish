@@ -44,8 +44,12 @@ pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
     for segment in segments {
         // Compute the segment's byte offset within the original buffer via
         // pointer arithmetic so that error spans are relative to the full line.
+        // Also account for leading whitespace that `split_command_and_args`
+        // trims internally — without this correction, spans in later pipeline
+        // stages would be off by the number of leading spaces after `|`.
         let offset = segment.as_ptr() as usize - buffer.as_ptr() as usize;
-        pipeline.push(parse_segment(segment).map_err(|e| adjust_span(e, offset))?);
+        let leading_ws = segment.len() - segment.trim_ascii_start().len();
+        pipeline.push(parse_segment(segment).map_err(|e| adjust_span(e, offset + leading_ws))?);
     }
     Ok(pipeline)
 }
@@ -707,6 +711,25 @@ mod tests {
         let result = split_command_and_args(b"echo \"unterminated");
         let err = result.unwrap_err();
         assert!(!err.is_fatal());
+    }
+
+    #[test]
+    fn test_pipeline_unclosed_quote_span_accounts_for_leading_whitespace() {
+        // The second segment has one leading space after `|`.
+        // The `"` opens at byte 5 within the trimmed segment `echo "bar`,
+        // which starts at byte 10 in the full input (`echo foo |`).
+        // With the leading-space correction (+1), the span should be at byte 16.
+        let input = b"echo foo | echo \"bar";
+        let err = parse(input).unwrap_err();
+        if let ShellError::UnclosedQuote { span, .. } = err {
+            assert_eq!(
+                span.offset(),
+                16,
+                "quote `\"` is at byte 16 in the full input"
+            );
+        } else {
+            panic!("expected UnclosedQuote, got: {err:?}");
+        }
     }
 
     // Helper: parse a single-stage command (no `|`) and extract the one stage.
