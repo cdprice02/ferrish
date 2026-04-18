@@ -42,7 +42,7 @@ pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
     let segments = split_pipeline_segments(buffer);
     let mut pipeline = Vec::with_capacity(segments.len());
     for segment in segments {
-        pipeline.push(parse_segment(&segment)?);
+        pipeline.push(parse_segment(segment)?);
     }
     Ok(pipeline)
 }
@@ -65,12 +65,13 @@ fn parse_segment(buffer: &[u8]) -> Result<PipelineStage, ShellError> {
     Ok((command, args, stdout_redirect, stderr_redirect))
 }
 
-/// Split `buffer` on unquoted `|` characters, returning a `Vec` of owned
-/// byte buffers — one per pipeline segment.  Quoted `|` characters are never
-/// treated as separators.
-fn split_pipeline_segments(buffer: &[u8]) -> Vec<Vec<u8>> {
-    let mut segments: Vec<Vec<u8>> = Vec::new();
-    let mut current: Vec<u8> = Vec::new();
+/// Split `buffer` on unquoted `|` characters, returning slices into the
+/// original buffer — one per pipeline segment.  Quoted `|` characters are
+/// never treated as separators.  No copying is performed; the returned slices
+/// borrow directly from `buffer`.
+fn split_pipeline_segments(buffer: &[u8]) -> Vec<&[u8]> {
+    let mut segments: Vec<&[u8]> = Vec::new();
+    let mut seg_start = 0;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut i = 0;
@@ -81,40 +82,27 @@ fn split_pipeline_segments(buffer: &[u8]) -> Vec<Vec<u8>> {
             if byte == b'\'' {
                 in_single_quote = false;
             }
-            current.push(byte);
         } else if in_double_quote {
             if byte == b'"' {
                 in_double_quote = false;
             } else if byte == b'\\' && i + 1 < buffer.len() {
-                // Keep the backslash and next char so `split_command_and_args`
-                // can re-process them correctly per-segment.
-                current.push(byte);
-                i += 1;
-                current.push(buffer[i]);
-                i += 1;
-                continue;
+                i += 1; // skip the escaped char; both bytes remain in the slice
             }
-            current.push(byte);
         } else if byte == b'\'' {
             in_single_quote = true;
-            current.push(byte);
         } else if byte == b'"' {
             in_double_quote = true;
-            current.push(byte);
         } else if byte == b'\\' && i + 1 < buffer.len() {
-            // Outside quotes: consume `\X` as a pair so `|` after `\` is not
-            // treated as a separator (e.g. `echo \| foo` should not split).
-            current.push(byte);
+            // Outside quotes: skip `\X` as a pair so a `|` after `\` is not
+            // treated as a separator (e.g. `echo \| foo` must not split).
             i += 1;
-            current.push(buffer[i]);
         } else if byte == b'|' {
-            segments.push(std::mem::take(&mut current));
-        } else {
-            current.push(byte);
+            segments.push(&buffer[seg_start..i]);
+            seg_start = i + 1;
         }
         i += 1;
     }
-    segments.push(current);
+    segments.push(&buffer[seg_start..]);
     segments
 }
 

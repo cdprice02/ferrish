@@ -129,6 +129,9 @@ pub fn execute(
 /// data.  The last stage's stdout is written to `io` (or to a file if a
 /// per-stage redirect is present).
 ///
+/// Stdout buffering is intentional for this implementation — issue #28 will
+/// replace it with OS-level streaming pipes between concurrent processes.
+///
 /// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(
     pipeline: Pipeline,
@@ -162,66 +165,55 @@ pub fn execute_pipeline(
         }
 
         // Intermediate stage: capture stdout for the next stage.
+        // POSIX: if this stage has a stdout redirect (`cmd > f | next`), honour
+        // it — write to the file and pass empty stdin to the next stage.
         let mut out_buf: Vec<u8> = Vec::new();
-        if let Some(prev) = stdin_buf.take() {
-            execute_stage_capture(
-                command, args, io, ctx, stderr_redirect, &prev, &mut out_buf,
-            )?;
-        } else {
-            execute_stage_capture_no_stdin(
-                command, args, io, ctx, stderr_redirect, &mut out_buf,
-            )?;
-        }
+        let prev = stdin_buf.take().unwrap_or_default();
+        execute_stage_capture(
+            command, args, io, ctx, stdout_redirect, stderr_redirect, &prev, &mut out_buf,
+        )?;
         stdin_buf = Some(out_buf);
     }
 
     Ok(None)
 }
 
-/// Run one pipeline stage, feeding `stdin_data` as the command's stdin and
-/// directing stdout to `out_buf`.  Stderr goes to `io`.
+/// Run one intermediate pipeline stage, feeding `stdin_data` as the command's
+/// stdin.  If `stdout_redirect` is `Some`, stdout goes to that file (POSIX
+/// semantics); otherwise it is captured into `out_buf` for the next stage.
+/// Stderr honours `stderr_redirect` or falls back to `io`.
+#[allow(clippy::too_many_arguments)]
 fn execute_stage_capture(
     command: Command,
     args: Args,
     io: &mut impl ShellIo,
     ctx: &mut ShellCtx,
+    stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
     stdin_data: &[u8],
     out_buf: &mut Vec<u8>,
 ) -> ShellResult<Option<ExitCode>> {
+    let mut stdout_file: Option<std::fs::File> = stdout_redirect
+        .as_ref()
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+
     let mut stderr_file: Option<std::fs::File> = stderr_redirect
         .as_ref()
         .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
         .transpose()?;
 
+    let out_writer: &mut dyn std::io::Write = match stdout_file.as_mut() {
+        Some(f) => f,
+        None => out_buf,
+    };
     let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
         Some(f) => f,
         None => io.err_writer(),
     };
 
-    execute_stage_inner(command, args, out_buf, err_writer, ctx, Some(stdin_data))
-}
-
-/// Run the first pipeline stage (no stdin piped from prior stage), capturing stdout.
-fn execute_stage_capture_no_stdin(
-    command: Command,
-    args: Args,
-    io: &mut impl ShellIo,
-    ctx: &mut ShellCtx,
-    stderr_redirect: Option<StderrRedirection>,
-    out_buf: &mut Vec<u8>,
-) -> ShellResult<Option<ExitCode>> {
-    let mut stderr_file: Option<std::fs::File> = stderr_redirect
-        .as_ref()
-        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
-        .transpose()?;
-
-    let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
-        Some(f) => f,
-        None => io.err_writer(),
-    };
-
-    execute_stage_inner(command, args, out_buf, err_writer, ctx, None)
+    let stdin = if stdin_data.is_empty() { None } else { Some(stdin_data) };
+    execute_stage_inner(command, args, out_writer, err_writer, ctx, stdin)
 }
 
 /// Run the last pipeline stage, feeding `stdin_data` and honouring redirects.
