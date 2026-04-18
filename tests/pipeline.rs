@@ -166,7 +166,15 @@ fn test_pipeline_builtin_in_middle() {
         .with_isolated_home()
         .script("echo ignored | pwd | grep /")
         .run();
-    result.assert_output_contains("/");
+    let output = result.output();
+    assert!(
+        output.contains('/'),
+        "expected piped pwd output to contain '/', got: {output:?}"
+    );
+    assert!(
+        !output.contains("ignored"),
+        "upstream builtin output must be piped, not written to terminal stdout: {output:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -179,4 +187,8 @@ fn test_pipeline_builtin_receives_piped_stdin() {
         .script("echo upstream | echo downstream")
         .run();
     result.assert_output_contains("downstream");
+    assert!(
+        !result.output().contains("upstream"),
+        "upstream builtin output must be routed into the pipe, not leaked to terminal stdout"
+    );
 }
