@@ -154,3 +154,29 @@ fn test_three_stage_pipeline_with_final_redirect() {
         "piped data must not appear on terminal stdout when redirected"
     );
 }
+
+// --- Builtins at any position in a pipeline (issue #29) ---
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_builtin_in_middle() {
+    // pwd is a builtin in the middle stage; it ignores piped stdin and emits cwd.
+    // grep filters for '/' which is present in any absolute path.
+    let result = ShellTest::new()
+        .with_isolated_home()
+        .script("echo ignored | pwd | grep /")
+        .run();
+    result.assert_output_contains("/");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_builtin_receives_piped_stdin() {
+    // A builtin at the receiving end of a pipe must not stall or error even
+    // though none of the current builtins consume stdin.  echo ignores its
+    // piped stdin and still emits its own arguments.
+    let result = ShellTest::new()
+        .script("echo upstream | echo downstream")
+        .run();
+    result.assert_output_contains("downstream");
+}
