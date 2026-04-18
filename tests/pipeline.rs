@@ -127,11 +127,14 @@ fn test_three_stage_pipeline_echo_cat_wc() {
     let result = ShellTest::new()
         .script("echo hello | cat | wc -c")
         .run();
-    let output = result.output().trim().to_string();
-    assert!(
-        output.contains('6'),
-        "expected wc -c to report 6 bytes, got: {output:?}"
-    );
+    let output = result.output();
+    // wc -c output may be padded and appears alongside shell prompts in captured output;
+    // scan tokens for the first that parses as an integer byte count.
+    let count: usize = output
+        .split_whitespace()
+        .find_map(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("expected wc -c output to contain a byte count, got: {output:?}"));
+    assert_eq!(count, 6, "wc -c should report 6 bytes for 'hello\\n', got: {output:?}");
 }
 
 #[cfg(unix)]
