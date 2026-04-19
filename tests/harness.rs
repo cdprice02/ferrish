@@ -80,6 +80,13 @@ impl ShellHarness {
             }
         }
 
+        // When running under cargo-llvm-cov, propagate LLVM_PROFILE_FILE so the
+        // child process writes its own profraw into the same collection directory.
+        #[cfg(coverage)]
+        if let Ok(template) = std::env::var("LLVM_PROFILE_FILE") {
+            cmd.env("LLVM_PROFILE_FILE", template);
+        }
+
         let mut child = cmd.spawn().expect("spawn ferrish");
 
         let stdin_input = script.to_string();
