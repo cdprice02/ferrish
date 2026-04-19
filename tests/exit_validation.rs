@@ -1,29 +1,29 @@
 mod harness;
 
-use harness::ShellTest;
+use harness::ShellHarness;
 
 #[test]
-fn test_exit_no_args_exits_zero() {
-    let result = ShellTest::new().script("exit").run();
-    assert_eq!(result.exit_code(), 0);
+fn exit_no_args_exits_zero() {
+    ShellHarness::new().run("exit").assert_exit_code(0);
 }
 
 #[test]
-fn test_exit_valid_code_exits_with_code() {
-    let result = ShellTest::new().script("exit 42").run();
-    assert_eq!(result.exit_code(), 42);
+fn exit_valid_code_propagates() {
+    ShellHarness::new().run("exit 42").assert_exit_code(42);
 }
 
 #[test]
-fn test_exit_out_of_range_prints_error() {
-    let result = ShellTest::new().script("exit 256").run();
-    result.assert_error_contains("numeric argument required");
-    assert_eq!(result.exit_code(), 1);
+fn exit_out_of_range_reports_error_and_exits_one() {
+    ShellHarness::new()
+        .run("exit 256")
+        .assert_stderr_contains("numeric argument required")
+        .assert_exit_code(1);
 }
 
 #[test]
-fn test_exit_non_numeric_prints_error() {
-    let result = ShellTest::new().script("exit abc").run();
-    result.assert_error_contains("numeric argument required");
-    assert_eq!(result.exit_code(), 1);
+fn exit_non_numeric_reports_error_and_exits_one() {
+    ShellHarness::new()
+        .run("exit abc")
+        .assert_stderr_contains("numeric argument required")
+        .assert_exit_code(1);
 }

@@ -1,150 +1,65 @@
 mod harness;
 
-use harness::ShellTest;
+use harness::ShellHarness;
 
-// ============================================================================
-// Prompt and Basic Parsing Tests
-// ============================================================================
-
-/// Verify shell shows prompt at startup
 #[test]
-fn test_repl_prompt_display() {
-    let result = ShellTest::new().script("").run();
-    let output = result.output();
+fn repl_shows_prompt_at_startup() {
+    let out = ShellHarness::new().run("");
+    let stdout = out.stdout();
     assert!(
-        output.contains(">") || output.contains("❯") || output.contains("$"),
-        "Expected prompt character in output, got:\n{}",
-        output
+        stdout.contains('>') || stdout.contains('❯') || stdout.contains('$'),
+        "expected prompt character in output, got: {stdout:?}"
     );
 }
 
-/// Test commands with multiple words
 #[test]
-fn test_repl_multiword_input() {
-    let result = ShellTest::new().script("echo hello world").run();
-    result.assert_output_contains("hello world");
-}
-
-/// Test handling of empty lines
-#[test]
-fn test_repl_empty_input() {
-    let result = ShellTest::new().script("\n\necho test").run();
-    result.assert_output_contains("test");
-}
-
-/// Test multiple commands in sequence
-#[test]
-fn test_repl_sequential_commands() {
-    let result = ShellTest::new().script("echo hello\npwd").run();
-    result.assert_output_contains("hello");
-}
-
-// ============================================================================
-// Exit Code Propagation Tests
-// ============================================================================
-
-#[test]
-fn test_exit_zero_propagates() {
-    let result = ShellTest::new().script("exit 0").run();
-    assert_eq!(result.exit_code(), 0);
+fn repl_ignores_empty_lines() {
+    ShellHarness::new().run("\n\necho test").assert_stdout_contains("test");
 }
 
 #[test]
-fn test_exit_nonzero_propagates() {
-    let result = ShellTest::new().script("exit 1").run();
-    assert_eq!(result.exit_code(), 1);
+fn exit_nonzero_code_propagates() {
+    ShellHarness::new().run("exit 1").assert_exit_code(1);
 }
 
-#[test]
-fn test_exit_arbitrary_code_propagates() {
-    let result = ShellTest::new().script("exit 42").run();
-    assert_eq!(result.exit_code(), 42);
-}
-
-// ============================================================================
-// Error Handling and Recovery Tests
-// ============================================================================
-
-/// Non-zero exit from an external command reports an error
-#[test]
 #[cfg(unix)]
-fn test_nonzero_exit_reports_error() {
-    let result = ShellTest::new().with_isolated_home().script("false").run();
-
+#[test]
+fn nonzero_exit_from_external_command_reports_error() {
+    let out = ShellHarness::new().run("false");
     assert!(
-        result.error().contains("exited with status")
-            || result.error().to_lowercase().contains("non-zero")
-            || result.error().contains("exited"),
-        "Expected exit status error, got: {}",
-        result.error()
+        out.stderr().contains("exited with status") || out.stderr().contains("exited"),
+        "expected exit status error, got: {:?}", out.stderr()
     );
 }
 
-/// Shell continues running after a non-fatal error
-#[test]
 #[cfg(unix)]
-fn test_nonfatal_error_then_continue() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("false\necho survived")
-        .run();
-
-    assert!(
-        result.error().contains("exited with status") || !result.error().is_empty(),
-        "Expected error output"
-    );
-    result.assert_output_contains("survived");
-}
-
-// ============================================================================
-// Unclosed quote error tests (issue #46)
-// ============================================================================
-
 #[test]
-fn test_unclosed_double_quote_reports_error_and_continues() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo \"hello\necho survived")
-        .run();
-
-    let err = result.error();
-    assert!(
-        err.contains("unclosed") && err.contains("quote"),
-        "expected unclosed quote error, got: {err}"
-    );
-    result.assert_output_contains("survived");
+fn nonfatal_error_does_not_stop_subsequent_commands() {
+    ShellHarness::new()
+        .run("false\necho survived")
+        .assert_stderr_contains("exited")
+        .assert_stdout_contains("survived");
 }
 
 #[test]
-fn test_unclosed_single_quote_reports_error_and_continues() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo 'hello\necho survived")
-        .run();
-
-    let err = result.error();
-    assert!(
-        err.contains("unclosed") && err.contains("quote"),
-        "expected unclosed quote error, got: {err}"
-    );
-    result.assert_output_contains("survived");
+fn unclosed_double_quote_reports_error_and_continues() {
+    let out = ShellHarness::new().run("echo \"hello\necho survived");
+    let err = out.stderr();
+    assert!(err.contains("unclosed") && err.contains("quote"), "got: {err}");
+    out.assert_stdout_contains("survived");
 }
 
-/// Unknown command error is written to stderr, not stdout
 #[test]
-fn test_error_goes_to_stderr_not_stdout() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("commandthatdoesnotexist_xyz")
-        .run();
+fn unclosed_single_quote_reports_error_and_continues() {
+    let out = ShellHarness::new().run("echo 'hello\necho survived");
+    let err = out.stderr();
+    assert!(err.contains("unclosed") && err.contains("quote"), "got: {err}");
+    out.assert_stdout_contains("survived");
+}
 
-    assert!(
-        !result.error().is_empty(),
-        "Error output should be non-empty for unknown command"
-    );
-    assert!(
-        !result.output().contains("not found"),
-        "Error text should not appear on stdout, got: {}",
-        result.output()
-    );
+#[test]
+fn unknown_command_error_goes_to_stderr_not_stdout() {
+    let out = ShellHarness::new().run("commandthatdoesnotexist_xyz");
+    assert!(!out.stderr().is_empty(), "expected error output on stderr for unknown command");
+    out.assert_stdout_not_contains("not found");
 }

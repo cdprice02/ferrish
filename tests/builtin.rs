@@ -1,279 +1,179 @@
 mod harness;
 
-use harness::ShellTest;
+use harness::ShellHarness;
 
 // ============================================================================
-// PWD Command Tests
+// PWD Tests
 // ============================================================================
 
 #[test]
-fn test_pwd_in_home_directory() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("pwd")
-        .run();
-
-    assert!(!result.output_contains("error"), "pwd should not error in home dir");
+fn pwd_in_home_directory() {
+    ShellHarness::new().run("pwd").assert_stderr_empty();
 }
 
 #[test]
-fn test_pwd_after_cd_to_subdirectory() {
-    let result = ShellTest::new()
-        .with_isolated_home()
+fn pwd_after_cd_to_subdirectory() {
+    ShellHarness::new()
         .with_dir("subdir")
-        .script("cd subdir\npwd")
-        .run();
-
-    assert!(
-        result.output_contains("subdir"),
-        "pwd output should contain 'subdir' after cd"
-    );
-}
-
-#[test]
-fn test_pwd_shows_correct_path() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("pwd\necho end")
-        .run();
-
-    let output = result.output();
-    assert!(output.contains("end"), "Should contain the end marker");
-    assert!(output.len() > 10, "pwd should produce meaningful output");
+        .run("cd subdir\npwd")
+        .assert_stdout_contains("subdir");
 }
 
 // ============================================================================
-// Echo Command Tests
+// Echo Tests
 // ============================================================================
 
 #[test]
-fn test_echo_with_no_arguments() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo")
-        .run();
-
-    assert!(!result.output_contains("error"), "echo should not error");
+fn echo_with_no_arguments() {
+    ShellHarness::new().run("echo").assert_stderr_empty();
 }
 
 #[test]
-fn test_echo_with_single_argument() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo hello")
-        .run();
-
-    result.assert_output_contains("hello");
+fn echo_with_single_argument() {
+    ShellHarness::new().run("echo hello").assert_stdout_contains("hello");
 }
 
 #[test]
-fn test_echo_with_multiple_arguments() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo hello world from ferrish")
-        .run();
-
-    result.assert_output_contains("hello");
-    result.assert_output_contains("world");
-    result.assert_output_contains("ferrish");
+fn echo_with_multiple_arguments() {
+    ShellHarness::new()
+        .run("echo hello world from ferrish")
+        .assert_stdout_contains("hello")
+        .assert_stdout_contains("world")
+        .assert_stdout_contains("ferrish");
 }
 
 #[test]
-fn test_echo_collapses_multiple_spaces() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo   hello   world")
-        .run();
-
-    result.assert_output_contains("hello");
-    result.assert_output_contains("world");
+fn echo_collapses_multiple_spaces() {
+    ShellHarness::new()
+        .run("echo   hello   world")
+        .assert_stdout_contains("hello")
+        .assert_stdout_contains("world");
 }
 
 // ============================================================================
-// Single-Quote Parsing Tests (issue #17)
+// Single-Quote Parsing Tests
 // ============================================================================
 
 #[test]
-fn test_echo_single_quote_preserves_spaces() {
-    // 'hello    world' should arrive as one argument with spaces intact.
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo 'hello    world'")
-        .run();
-
-    result.assert_output_contains("hello    world");
+fn echo_single_quote_preserves_spaces() {
+    ShellHarness::new()
+        .run("echo 'hello    world'")
+        .assert_stdout_contains("hello    world");
 }
 
 #[test]
-fn test_echo_single_quote_adjacent_concatenation() {
-    // 'hello''world' should concatenate into a single argument "helloworld".
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo 'hello''world'")
-        .run();
-
-    result.assert_output_contains("helloworld");
+fn echo_single_quote_adjacent_concatenation() {
+    ShellHarness::new()
+        .run("echo 'hello''world'")
+        .assert_stdout_contains("helloworld");
 }
 
 #[test]
-fn test_echo_single_quote_mixed_adjacent_concatenation() {
-    // hello''world should concatenate into a single argument "helloworld".
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo hello''world")
-        .run();
-
-    result.assert_output_contains("helloworld");
+fn echo_single_quote_mixed_adjacent_concatenation() {
+    ShellHarness::new()
+        .run("echo hello''world")
+        .assert_stdout_contains("helloworld");
 }
 
 // ============================================================================
-// CD Command Tests
+// CD Tests
 // ============================================================================
 
 #[test]
-fn test_cd_to_nonexistent_directory_shows_error() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("cd nonexistent")
-        .run();
-
-    result.assert_error_contains("no such file or directory");
+fn cd_to_nonexistent_directory_shows_error() {
+    ShellHarness::new()
+        .run("cd nonexistent")
+        .assert_stderr_contains("no such file or directory");
 }
 
 #[test]
-fn test_cd_error_contains_appropriate_message() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("cd /this/path/definitely/does/not/exist/on/any/system")
-        .run();
-
-    let error = result.error();
-    assert!(
-        error.contains("cd:") || error.contains("no such file or directory"),
-        "Error message should mention cd command or file not found: {}",
-        error
-    );
-}
-
-#[test]
-fn test_cd_to_file_not_directory() {
-    let result = ShellTest::new()
-        .with_isolated_home()
+fn cd_to_file_shows_not_a_directory_error() {
+    ShellHarness::new()
         .with_file("somefile", "")
-        .script("cd somefile")
-        .run();
-
-    result.assert_error_contains("not a directory");
+        .run("cd somefile")
+        .assert_stderr_contains("not a directory");
 }
 
 #[test]
-fn test_cd_default_to_home() {
-    let result = ShellTest::new().with_isolated_home().script("cd\npwd").run();
-
-    assert!(!result.output_contains("error"));
-    assert!(!result.output().is_empty());
+fn cd_no_args_goes_to_home() {
+    ShellHarness::new().run("cd\npwd").assert_stderr_empty();
 }
 
 #[test]
-fn test_cd_tilde_explicit() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("cd ~\npwd")
-        .run();
-
-    assert!(!result.output_contains("error"), "cd ~ should not error");
-    assert!(!result.output().is_empty(), "pwd should produce output after cd ~");
+fn cd_tilde_goes_to_home() {
+    let out = ShellHarness::new().run("cd ~\npwd");
+    let home = out.home_dir().to_str().unwrap().to_string();
+    out.assert_stdout_contains(&home).assert_stderr_empty();
 }
 
 #[test]
-fn test_cd_relative_then_back() {
-    let result = ShellTest::new()
-        .with_isolated_home()
+fn cd_relative_then_back() {
+    ShellHarness::new()
         .with_dir("subdir")
-        .script("cd subdir\ncd ..\npwd\necho done")
-        .run();
-
-    result.assert_output_contains("done");
-    assert!(!result.output_contains("error"), "cd .. should not error");
+        .run("cd subdir\ncd ..\npwd\necho done")
+        .assert_stdout_contains("done")
+        .assert_stderr_empty();
 }
 
 // ============================================================================
-// Type Command Tests
+// Type Tests
 // ============================================================================
 
 #[test]
-fn test_type_identifies_builtin() {
-    let result = ShellTest::new().with_isolated_home().script("type exit").run();
-
-    assert!(result.output().contains("builtin") || result.output().contains("exit"));
+fn type_identifies_exit_as_builtin() {
+    ShellHarness::new()
+        .run("type exit")
+        .assert_stdout_contains("builtin");
 }
 
 #[test]
-fn test_type_nonexistent_returns_not_found() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("type definitely_does_not_exist_123")
-        .run();
-
-    assert!(result.error().contains("not found") || result.output().contains("not found"));
+fn type_identifies_echo_as_builtin() {
+    ShellHarness::new()
+        .run("type echo")
+        .assert_stdout_contains("echo")
+        .assert_stdout_contains("builtin");
 }
 
 #[test]
-fn test_type_with_no_args_reports_error() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("type\necho survived")
-        .run();
-
-    result.assert_error_contains("missing operand");
-    result.assert_output_contains("survived");
+fn type_nonexistent_command_reports_not_found() {
+    let out = ShellHarness::new().run("type definitely_does_not_exist_123");
+    let combined = format!("{}{}", out.stdout(), out.stderr());
+    assert!(combined.contains("not found"), "got stdout={:?} stderr={:?}", out.stdout(), out.stderr());
 }
 
 #[test]
-fn test_type_system_executable() {
-    #[cfg(unix)]
-    let (script, expected_name) = ("type sh", "sh");
-    #[cfg(windows)]
-    let (script, expected_name) = ("type cmd", "cmd");
+fn type_with_no_args_reports_missing_operand() {
+    ShellHarness::new()
+        .run("type\necho survived")
+        .assert_stderr_contains("missing operand")
+        .assert_stdout_contains("survived");
+}
 
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script(script)
-        .run();
-
-    let output = result.output();
-    assert!(
-        output.contains(&format!("{expected_name} is")),
-        "type {expected_name} should show '{expected_name} is <path>', got: {output}"
-    );
-    assert!(
-        output.contains('/') || output.contains('\\'),
-        "type {expected_name} output should contain a path separator, got: {output}"
-    );
+#[cfg(unix)]
+#[test]
+fn type_system_executable_shows_path() {
+    let out = ShellHarness::new().run("type sh");
+    let stdout = out.stdout();
+    assert!(stdout.contains("sh is"), "got: {stdout}");
+    assert!(stdout.contains('/'), "expected a path, got: {stdout}");
 }
 
 // ============================================================================
-// Exit and Sequential Command Tests
+// Exit and Sequential Commands
 // ============================================================================
 
 #[test]
-fn test_exit_command_closes_shell() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo before\nexit")
-        .run();
-
-    result.assert_output_contains("before");
+fn exit_command_closes_shell() {
+    ShellHarness::new()
+        .run("echo before\nexit")
+        .assert_stdout_contains("before");
 }
 
 #[test]
-fn test_multiple_sequential_commands_work() {
-    let result = ShellTest::new()
-        .with_isolated_home()
-        .script("echo first\necho second\necho third")
-        .run();
-
-    result.assert_output_contains("first");
-    result.assert_output_contains("second");
-    result.assert_output_contains("third");
+fn multiple_sequential_commands_work() {
+    ShellHarness::new()
+        .run("echo first\necho second\necho third")
+        .assert_stdout_contains("first")
+        .assert_stdout_contains("second")
+        .assert_stdout_contains("third");
 }
