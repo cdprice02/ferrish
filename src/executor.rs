@@ -172,7 +172,7 @@ pub fn execute_pipeline(
 /// Run one intermediate pipeline stage, feeding `stdin_data` as the command's
 /// stdin.  If `stdout_redirect` is `Some`, stdout goes to that file (POSIX
 /// semantics); otherwise it is captured into `out_buf` for the next stage.
-/// Stderr honours `stderr_redirect` or falls back to `io`.
+/// Stderr honours `stderr_redirect` or falls back to the provided `err` writer.
 #[allow(clippy::too_many_arguments)]
 fn execute_stage_capture(
     command: Command,

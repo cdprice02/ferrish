@@ -61,14 +61,26 @@ impl ShellHarness {
             std::fs::write(&full, contents).expect("setup: write file");
         }
 
-        let mut child = Command::new(FERRISH_BIN)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(FERRISH_BIN);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("HOME", &home)
-            .current_dir(&home)
-            .spawn()
-            .expect("spawn ferrish");
+            .current_dir(&home);
+
+        // On Windows the home directory comes from USERPROFILE / HOMEDRIVE+HOMEPATH.
+        #[cfg(windows)]
+        {
+            cmd.env("USERPROFILE", &home);
+            if let Some(s) = home.to_str() {
+                if let Some((drive, path)) = s.split_once(':') {
+                    cmd.env("HOMEDRIVE", format!("{drive}:"));
+                    cmd.env("HOMEPATH", if path.is_empty() { "\\" } else { path });
+                }
+            }
+        }
+
+        let mut child = cmd.spawn().expect("spawn ferrish");
 
         let stdin_input = script.to_string();
         let mut stdin = child.stdin.take().expect("take stdin");
