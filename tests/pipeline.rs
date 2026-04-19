@@ -231,7 +231,7 @@ fn test_pipeline_last_stage_nonzero_surfaces_error() {
         .script("echo ok | false")
         .run();
     assert!(
-        result.error().contains("exited with status") || result.error().contains("false"),
+        result.error().contains("exited with status"),
         "expected exit failure in stderr, got: {:?}",
         result.error()
     );
@@ -245,7 +245,7 @@ fn test_pipeline_all_succeed_no_error() {
         .run();
     result.assert_output_contains("hello");
     assert!(
-        result.error().is_empty() || !result.error().contains("exited with status"),
+        result.error().is_empty(),
         "no error expected for successful pipeline, got: {:?}",
         result.error()
     );

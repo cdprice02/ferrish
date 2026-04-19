@@ -150,8 +150,8 @@ impl ShellError {
     }
 
     /// Extract the [`ExitStatus`] if this error (or its wrapped source) is a
-    /// [`ShellError::NonZeroExit`].  Used by the pipeline executor to collect
-    /// per-stage exit codes without pattern-matching through the `InCommand`
+    /// [`ShellError::NonZeroExit`].  Useful for callers that need to inspect
+    /// stage exit codes without pattern-matching through the `InCommand`
     /// wrapper at each call site.
     pub fn as_exit_status(&self) -> Option<ExitStatus> {
         match self {
