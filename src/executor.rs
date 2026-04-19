@@ -13,7 +13,6 @@ use crate::{
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
-    io::ShellIo,
     parser::Pipeline,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
 };
@@ -88,7 +87,8 @@ fn open_redirect_file(
 pub fn execute(
     command: Command,
     args: Args,
-    io: &mut impl ShellIo,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
@@ -103,21 +103,15 @@ pub fn execute(
         .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
         .transpose()?;
 
-    match (stdout_file.as_mut(), stderr_file.as_mut()) {
-        (Some(out_f), Some(err_f)) => {
-            execute_with_writers(command, args, out_f, err_f, ctx)
-        }
-        (Some(out_f), None) => {
-            execute_with_writers(command, args, out_f, io.err_writer(), ctx)
-        }
-        (None, Some(err_f)) => {
-            execute_with_writers(command, args, io.out_writer(), err_f, ctx)
-        }
-        (None, None) => {
-            let (out, err) = io.writers();
-            execute_with_writers(command, args, out, err, ctx)
-        }
-    }
+    let eff_out: &mut dyn std::io::Write = match stdout_file.as_mut() {
+        Some(f) => f,
+        None => out,
+    };
+    let eff_err: &mut dyn std::io::Write = match stderr_file.as_mut() {
+        Some(f) => f,
+        None => err,
+    };
+    execute_with_writers(command, args, eff_out, eff_err, ctx)
 }
 
 /// Execute a [`Pipeline`] (one or more `|`-connected commands).
@@ -135,13 +129,14 @@ pub fn execute(
 /// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(
     pipeline: Pipeline,
-    io: &mut impl ShellIo,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     // Fast path: no pipe operators.
     if pipeline.len() == 1 {
         let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
-        return execute(cmd, args, io, ctx, stdout_redir, stderr_redir);
+        return execute(cmd, args, out, err, ctx, stdout_redir, stderr_redir);
     }
 
     // Multi-stage: carry the previous stage's captured stdout forward.
@@ -152,33 +147,21 @@ pub fn execute_pipeline(
         let is_last = i == last_idx;
 
         if is_last {
-            // Final stage: write to the shell's real I/O (honouring any redirect).
             return if let Some(buf) = stdin_buf.take() {
                 execute_stage_with_stdin(
-                    command, args, io, ctx, stdout_redirect, stderr_redirect, &buf,
+                    command, args, out, err, ctx, stdout_redirect, stderr_redirect, &buf,
                 )
             } else {
-                execute(command, args, io, ctx, stdout_redirect, stderr_redirect)
+                execute(command, args, out, err, ctx, stdout_redirect, stderr_redirect)
             };
         }
 
-        // Intermediate stage: capture stdout for the next stage.
-        // POSIX: if this stage has a stdout redirect (`cmd > f | next`), honour
-        // it — write to the file and pass empty stdin to the next stage.
-        // Pass `prev` as `Option<&[u8]>`: `None` on the first stage so the
-        // command can inherit terminal stdin; `Some(&[])` on subsequent stages
-        // so a command after a redirect gets a closed (empty) pipe, not the terminal.
         let mut out_buf: Vec<u8> = Vec::new();
         let prev = stdin_buf.take();
-        // Fail-fast for the current serial, buffered pipeline model: any
-        // non-zero exit from an intermediate stage aborts the pipeline
-        // immediately.  This is safe because later stages have not been
-        // spawned yet.  The `?` propagates both NonZeroExit and fatal errors;
-        // the REPL in shell.rs distinguishes them via `is_fatal()`.  Issue #28
-        // tracks replacing this with concurrent OS-level pipes, which will
-        // require explicit wait/reap handling for already-started children.
+        // Fail-fast: any non-zero exit from an intermediate stage aborts the pipeline.
+        // Issue #28 tracks replacing this with concurrent OS-level pipes.
         execute_stage_capture(
-            command, args, io, ctx, stdout_redirect, stderr_redirect, prev.as_deref(), &mut out_buf,
+            command, args, err, ctx, stdout_redirect, stderr_redirect, prev.as_deref(), &mut out_buf,
         )?;
         stdin_buf = Some(out_buf);
     }
@@ -194,7 +177,7 @@ pub fn execute_pipeline(
 fn execute_stage_capture(
     command: Command,
     args: Args,
-    io: &mut impl ShellIo,
+    err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
@@ -217,17 +200,19 @@ fn execute_stage_capture(
     };
     let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
         Some(f) => f,
-        None => io.err_writer(),
+        None => err,
     };
 
     execute_stage_inner(command, args, out_writer, err_writer, ctx, stdin_data)
 }
 
 /// Run the last pipeline stage, feeding `stdin_data` and honouring redirects.
+#[allow(clippy::too_many_arguments)]
 fn execute_stage_with_stdin(
     command: Command,
     args: Args,
-    io: &mut impl ShellIo,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
@@ -243,14 +228,13 @@ fn execute_stage_with_stdin(
         .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
         .transpose()?;
 
-    let (io_out, io_err) = io.writers();
     let out_writer: &mut dyn std::io::Write = match stdout_file.as_mut() {
         Some(f) => f,
-        None => io_out,
+        None => out,
     };
     let err_writer: &mut dyn std::io::Write = match stderr_file.as_mut() {
         Some(f) => f,
-        None => io_err,
+        None => err,
     };
 
     execute_stage_inner(command, args, out_writer, err_writer, ctx, Some(stdin_data))
@@ -506,81 +490,74 @@ fn join_io_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::MockIo;
     use std::path::PathBuf;
 
     fn test_ctx() -> ShellCtx {
         ShellCtx::new(None, std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
     }
 
-    fn run_builtin(
-        builtin: BuiltInName,
-        args: Vec<Arg>,
-        io: &mut MockIo,
-        ctx: &mut ShellCtx,
-    ) -> ShellResult<Option<ExitCode>> {
-        execute(
-            Command::BuiltIn(BuiltInCommand::new(builtin)),
-            args,
-            io,
-            ctx,
-            None,
-            None,
-        )
+    fn exec_builtin(builtin: BuiltInName, args: Vec<Arg>) -> ShellResult<Option<ExitCode>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let mut ctx = test_ctx();
+        execute(Command::BuiltIn(BuiltInCommand::new(builtin)), args, &mut out, &mut err, &mut ctx, None, None)
+    }
+
+    // --- exit ---
+
+    #[test]
+    fn exit_no_args_returns_success_exit_code() {
+        assert_eq!(exec_builtin(BuiltInName::Exit, vec![]).unwrap(), Some(ExitCode::SUCCESS));
     }
 
     #[test]
-    fn test_execute_builtin_exit() {
-        let mut io = MockIo::empty();
+    fn exit_with_numeric_arg_returns_that_code() {
+        assert_eq!(exec_builtin(BuiltInName::Exit, vec![Arg::from("42")]).unwrap(), Some(ExitCode(42)));
+    }
+
+    #[test]
+    fn exit_with_invalid_arg_writes_error_to_stderr() {
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
         let mut ctx = test_ctx();
-        let result = run_builtin(BuiltInName::Exit, vec![], &mut io, &mut ctx);
+        let result = execute(
+            Command::BuiltIn(BuiltInCommand::new(BuiltInName::Exit)),
+            vec![Arg::from("notanumber")],
+            &mut out, &mut err, &mut ctx, None, None,
+        );
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
+        assert_eq!(result.unwrap(), Some(ExitCode::FAILURE));
+        assert!(String::from_utf8_lossy(&err).contains("numeric argument required"));
+        assert!(out.is_empty(), "nothing written to stdout on bad exit arg");
     }
 
-    #[test]
-    fn test_execute_builtin_exit_with_code() {
-        let mut io = MockIo::empty();
-        let mut ctx = test_ctx();
-        let result = run_builtin(
-            BuiltInName::Exit,
-            vec![Arg::from("1")],
-            &mut io,
-            &mut ctx,
-        );
-        assert_eq!(result.unwrap(), Some(ExitCode(1)));
-    }
+    // --- echo ---
 
     #[test]
-    fn test_execute_type_builtin() {
-        let args = vec![Arg::from("echo")];
+    fn echo_no_args_writes_newline() {
         let mut out: Vec<u8> = Vec::new();
-        execute_type(args, &mut out).unwrap();
-        assert_eq!(out, b"echo is a shell builtin\n");
+        execute_echo(vec![], &mut out).unwrap();
+        assert_eq!(out, b"\n");
     }
 
     #[test]
-    fn test_execute_type_unrecognized() {
-        let args = vec![Arg::from("nonexistentcommand")];
+    fn echo_single_arg_writes_arg_and_newline() {
         let mut out: Vec<u8> = Vec::new();
-        let result = execute_type(args, &mut out);
-        assert!(result.is_err());
-        assert_eq!(
-            result.err().unwrap(),
-            ShellError::CommandNotFound { name: "nonexistentcommand".to_string() }
-        );
+        execute_echo(vec![Arg::from("hello")], &mut out).unwrap();
+        assert_eq!(out, b"hello\n");
     }
 
     #[test]
-    fn test_execute_type_exit_builtin() {
-        let args = vec![Arg::from("exit")];
+    fn echo_multiple_args_space_joins_them() {
         let mut out: Vec<u8> = Vec::new();
-        execute_type(args, &mut out).unwrap();
-        assert_eq!(out, b"exit is a shell builtin\n");
+        execute_echo(vec![Arg::from("a"), Arg::from("b"), Arg::from("c")], &mut out).unwrap();
+        assert_eq!(out, b"a b c\n");
     }
 
+    // --- pwd ---
+
     #[test]
-    fn test_execute_builtin_pwd() {
+    fn pwd_writes_cwd_to_stdout() {
         let cwd = PathBuf::from("/some/test/path");
         let ctx = ShellCtx::new(None, cwd.clone());
         let mut out: Vec<u8> = Vec::new();
@@ -588,9 +565,63 @@ mod tests {
         assert_eq!(out, format!("{}\n", cwd.display()).as_bytes());
     }
 
+    // --- cd ---
+
+    #[test]
+    fn cd_no_args_changes_to_home() {
+        let td = tempfile::tempdir().expect("temp dir");
+        let home = td.path().to_path_buf();
+        let mut ctx = ShellCtx::new(Some(home.clone()), home.clone());
+        execute_cd(vec![], &mut ctx).unwrap();
+        // canonicalize both sides to handle symlinks (e.g. /var → /private/var on macOS)
+        let got = std::fs::canonicalize(&ctx.cwd).unwrap_or(ctx.cwd.clone());
+        let expected = std::fs::canonicalize(&home).unwrap_or(home.clone());
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn cd_missing_path_returns_file_not_found() {
+        let mut ctx = test_ctx();
+        let result = execute_cd(vec![Arg::from("/nonexistent_path_xyz_123")], &mut ctx);
+        assert!(matches!(result, Err(ShellError::FileNotFound { .. })));
+    }
+
+    #[test]
+    fn cd_to_file_returns_not_a_directory() {
+        let td = tempfile::tempdir().expect("temp dir");
+        let file = td.path().join("file.txt");
+        std::fs::write(&file, b"").expect("create file");
+        let mut ctx = ShellCtx::new(None, td.path().to_path_buf());
+        let result = execute_cd(vec![Arg::from(file.to_str().unwrap())], &mut ctx);
+        assert!(matches!(result, Err(ShellError::NotADirectory { .. })));
+    }
+
+    // --- type ---
+
+    #[test]
+    fn type_builtin_writes_correct_format() {
+        let mut out: Vec<u8> = Vec::new();
+        execute_type(vec![Arg::from("echo")], &mut out).unwrap();
+        assert_eq!(out, b"echo is a shell builtin\n");
+    }
+
+    #[test]
+    fn type_nonexistent_returns_command_not_found_error() {
+        let mut out: Vec<u8> = Vec::new();
+        let result = execute_type(vec![Arg::from("nonexistentcommand")], &mut out);
+        assert_eq!(result.unwrap_err(), ShellError::CommandNotFound { name: "nonexistentcommand".to_string() });
+    }
+
+    #[test]
+    fn type_no_args_returns_missing_operand() {
+        let mut out: Vec<u8> = Vec::new();
+        let result = execute_type(vec![], &mut out);
+        assert_eq!(result.unwrap_err(), ShellError::MissingOperand);
+    }
+
     #[cfg(unix)]
     #[test]
-    fn test_execute_type_executable() {
+    fn type_executable_on_path_writes_path() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -608,88 +639,64 @@ mod tests {
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("PATH", &new_path) };
 
-        let args = vec![Arg::from("my_test_tool")];
         let mut out: Vec<u8> = Vec::new();
-        let result = execute_type(args, &mut out);
+        let result = execute_type(vec![Arg::from("my_test_tool")], &mut out);
 
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("PATH", &original_path) };
 
         result.unwrap();
         let output = String::from_utf8(out).unwrap();
-        assert!(
-            output.contains("my_test_tool is"),
-            "unexpected output: {output}"
-        );
-        assert!(
-            output.contains(bin_path.to_str().unwrap()),
-            "path not in output: {output}"
-        );
+        assert!(output.contains("my_test_tool is"), "got: {output}");
+        assert!(output.contains(bin_path.to_str().unwrap()), "path missing from: {output}");
     }
 
+    // --- redirect routing ---
+
     #[test]
-    fn test_execute_echo_with_redirect_writes_to_file() {
-        let dir = tempfile::tempdir().expect("create temp dir");
+    fn stdout_redirect_writes_to_file_not_terminal() {
+        let dir = tempfile::tempdir().expect("temp dir");
         let target = dir.path().join("out.txt");
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
-        let mut io = MockIo::empty();
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
         let redir = Some(StdoutRedirection::new(RedirectMode::Overwrite, target.clone()));
-        let result = execute(
+        execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Echo)),
             vec![Arg::from("hello")],
-            &mut io,
-            &mut ctx,
-            redir,
-            None,
-        );
-        assert!(result.is_ok(), "execute with redirect should succeed: {result:?}");
-        // stdout (io.output) should be empty — echo went to the file.
-        assert_eq!(io.output(), b"", "terminal stdout should be empty");
-        let contents = std::fs::read_to_string(&target).expect("redirect file");
-        assert_eq!(contents, "hello\n");
+            &mut out, &mut err, &mut ctx, redir, None,
+        ).unwrap();
+        assert!(out.is_empty(), "terminal stdout should be empty when redirected");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello\n");
     }
 
     #[test]
-    fn test_execute_with_stderr_redirect_writes_to_file() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let err_target = dir.path().join("err.txt");
+    fn stderr_redirect_writes_to_file_not_terminal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("err.txt");
         let mut ctx = ShellCtx::new(None, dir.path().to_path_buf());
-        let mut io = MockIo::empty();
-        // exit with invalid argument writes to stderr
-        let stderr_redir = Some(StderrRedirection::new(RedirectMode::Overwrite, err_target.clone()));
-        let result = execute(
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let redir = Some(StderrRedirection::new(RedirectMode::Overwrite, target.clone()));
+        execute(
             Command::BuiltIn(BuiltInCommand::new(BuiltInName::Exit)),
             vec![Arg::from("notanumber")],
-            &mut io,
-            &mut ctx,
-            None,
-            stderr_redir,
-        );
-        assert!(result.is_ok(), "execute with stderr redirect should succeed: {result:?}");
-        // io.error() (terminal stderr) should be empty — error went to the file.
-        assert_eq!(io.error(), b"", "terminal stderr should be empty");
-        let contents = std::fs::read_to_string(&err_target).expect("stderr redirect file");
-        assert!(contents.contains("numeric argument required"), "expected error in file: {contents}");
+            &mut out, &mut err, &mut ctx, None, redir,
+        ).unwrap();
+        assert!(err.is_empty(), "terminal stderr should be empty when redirected");
+        let contents = std::fs::read_to_string(&target).unwrap();
+        assert!(contents.contains("numeric argument required"), "got: {contents}");
     }
 
+    // --- thread panic safety ---
+
     #[test]
-    fn test_join_io_thread_panic_is_non_fatal_io_error() {
-        // Verify that a panicking I/O thread produces a non-fatal ShellError::Io
-        // that includes the stream name, rather than propagating a process panic.
-        let handle = std::thread::spawn(|| -> std::io::Result<Vec<u8>> {
-            panic!("simulated OOM");
-        });
-        // Suppress the panic output from the child thread in test output.
+    fn join_io_thread_panic_becomes_non_fatal_io_error() {
+        let handle = std::thread::spawn(|| -> std::io::Result<Vec<u8>> { panic!("simulated OOM") });
         let result = join_io_thread(handle, "stdout");
         let err = result.expect_err("expected Err from panicking thread");
-        assert!(!err.is_fatal(), "join panic must not be fatal");
-        assert!(
-            matches!(err, ShellError::Io(_)),
-            "expected ShellError::Io, got {err:?}"
-        );
-        assert!(
-            err.to_string().contains("stdout"),
-            "error message should name the stream: {err}"
-        );
+        assert!(!err.is_fatal());
+        assert!(matches!(err, ShellError::Io(_)));
+        assert!(err.to_string().contains("stdout"));
     }
 }

@@ -19,8 +19,6 @@ pub mod executor;
 pub mod exit;
 /// Filesystem path utilities.
 pub mod fs;
-/// I/O abstraction layer for the shell.
-pub mod io;
 /// Input parsing: splits raw bytes into a command and its arguments.
 pub mod parser;
 /// I/O redirection descriptors produced by the parser.
@@ -33,30 +31,26 @@ pub use command::Command;
 pub use ctx::ShellConfig;
 pub use shell::Shell;
 
-/// Run the ferrish shell with standard I/O
-///
-/// This is the primary way to start ferrish. It sets up stdin/stdout/stderr
-/// and runs the interactive REPL.
+/// Run the ferrish shell with standard I/O.
 ///
 /// # Example
 /// ```no_run
 /// let result = ferrish::run();
 /// ```
 ///
-/// For testing or custom I/O, use [`Shell::builder()`] instead:
+/// For testing or scripting, use [`Shell::builder()`] with [`Shell::run_script()`]:
 /// ```no_run
 /// use ferrish::Shell;
-/// use ferrish::io::MockIo;
 ///
-/// let io = MockIo::from_lines(&["echo test", "exit"]);
-/// let mut shell = Shell::builder().with_io(io);
-/// let exit_code = shell.run()?;
+/// let mut out = Vec::new();
+/// let mut err = Vec::new();
+/// let exit_code = Shell::builder().build().run_script(&["echo test"], &mut out, &mut err)?;
 /// # Ok::<(), miette::Report>(())
 /// ```
 pub fn run() -> miette::Result<exit::ExitCode> {
     use clap::Parser;
     match cli::Cli::try_parse() {
-        Ok(_) => Shell::<crate::io::StandardIo>::builder().with_std_io().run(),
+        Ok(_) => Shell::builder().build().run(),
         Err(e) => e.exit(),
     }
 }

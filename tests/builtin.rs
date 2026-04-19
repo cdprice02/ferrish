@@ -135,10 +135,11 @@ fn type_identifies_echo_as_builtin() {
 }
 
 #[test]
-fn type_nonexistent_command_reports_not_found() {
-    let out = ShellHarness::new().run("type definitely_does_not_exist_123");
-    let combined = format!("{}{}", out.stdout(), out.stderr());
-    assert!(combined.contains("not found"), "got stdout={:?} stderr={:?}", out.stdout(), out.stderr());
+fn type_nonexistent_command_reports_not_found_on_stderr() {
+    ShellHarness::new()
+        .run("type definitely_does_not_exist_123")
+        .assert_stderr_contains("not found")
+        .assert_stdout_not_contains("not found");
 }
 
 #[test]
