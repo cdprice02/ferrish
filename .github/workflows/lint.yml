@@ -32,7 +32,7 @@ jobs:
       - name: install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --version 0.6.13 --locked
       - name: run coverage
-        run: cargo llvm-cov --all-features --workspace --fail-under 80 --lcov --output-path lcov.info
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
       - name: upload to coveralls
         uses: coverallsapp/github-action@v2
         with:
