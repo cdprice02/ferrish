@@ -30,7 +30,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        run: cargo install cargo-llvm-cov --version 0.6.13 --locked
       - name: run coverage
         run: cargo llvm-cov --all-features --workspace --fail-under 80 --lcov --output-path lcov.info
       - name: upload to coveralls
