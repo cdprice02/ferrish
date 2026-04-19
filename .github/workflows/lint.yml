@@ -37,4 +37,3 @@ jobs:
         uses: coverallsapp/github-action@v2
         with:
           file: lcov.info
-          coveralls-token: ${{ secrets.COVERALLS_TOKEN }}
