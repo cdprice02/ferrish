@@ -27,3 +27,11 @@ fn exit_non_numeric_reports_error_and_exits_one() {
         .assert_stderr_contains("numeric argument required")
         .assert_exit_code(1);
 }
+
+#[test]
+fn exit_stops_subsequent_commands() {
+    ShellHarness::new()
+        .run("echo a\nexit\necho b")
+        .assert_stdout_contains("a")
+        .assert_stdout_not_contains("b");
+}

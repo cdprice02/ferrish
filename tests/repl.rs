@@ -18,8 +18,11 @@ fn repl_ignores_empty_lines() {
 }
 
 #[test]
-fn exit_nonzero_code_propagates() {
-    ShellHarness::new().run("exit 1").assert_exit_code(1);
+fn whitespace_only_lines_produce_no_errors() {
+    ShellHarness::new()
+        .run("   \n\t\n  \t  \necho alive")
+        .assert_stderr_empty()
+        .assert_stdout_contains("alive");
 }
 
 #[cfg(unix)]
