@@ -26,15 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - name: install tarpaulin
-        run: cargo install cargo-tarpaulin --version 0.31.5 --locked
+      - name: install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.6.13 --locked
       - name: run coverage
-        env:
-          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
-        run: |
-          if [ -n "$COVERALLS_REPO_TOKEN" ]; then
-            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --coveralls "$COVERALLS_REPO_TOKEN" --fail-under 80
-          else
-            cargo tarpaulin --verbose --all-features --workspace --timeout 180 --fail-under 80
-          fi
+        run: cargo llvm-cov --all-features --workspace --fail-under 80 --lcov --output-path lcov.info
+      - name: upload to coveralls
+        if: ${{ secrets.COVERALLS_TOKEN != '' }}
+        uses: coverallsapp/github-action@v2
+        with:
+          file: lcov.info
+          coveralls-token: ${{ secrets.COVERALLS_TOKEN }}
