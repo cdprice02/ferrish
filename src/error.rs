@@ -148,6 +148,18 @@ impl ShellError {
             _ => false,
         }
     }
+
+    /// Extract the [`ExitStatus`] if this error (or its wrapped source) is a
+    /// [`ShellError::NonZeroExit`].  Useful for callers that need to inspect
+    /// stage exit codes without pattern-matching through the `InCommand`
+    /// wrapper at each call site.
+    pub fn as_exit_status(&self) -> Option<ExitStatus> {
+        match self {
+            ShellError::NonZeroExit(s) => Some(*s),
+            ShellError::InCommand { source, .. } => source.as_exit_status(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +234,34 @@ mod tests {
             span: SourceSpan::from((5, 1)),
         };
         assert_eq!(err.to_string(), "unclosed Double quote");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_as_exit_status_non_zero_exit() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(1 << 8);
+        let err = ShellError::NonZeroExit(status);
+        assert_eq!(err.as_exit_status(), Some(status));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_as_exit_status_in_command_wraps_non_zero() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(2 << 8);
+        let inner = ShellError::NonZeroExit(status);
+        let err = ShellError::InCommand {
+            command: Command::Unrecognized(b"foo".to_vec()),
+            source: Box::new(inner),
+        };
+        assert_eq!(err.as_exit_status(), Some(status));
+    }
+
+    #[test]
+    fn test_as_exit_status_other_variants_return_none() {
+        let err = ShellError::CommandNotFound { name: "foo".to_string() };
+        assert_eq!(err.as_exit_status(), None);
     }
 
     #[test]

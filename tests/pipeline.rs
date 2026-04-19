@@ -192,3 +192,61 @@ fn test_pipeline_builtin_receives_piped_stdin() {
         "upstream builtin output must be routed into the pipe, not leaked to terminal stdout"
     );
 }
+
+// --- Pipeline fail-fast / exit code propagation (issue #30) ---
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_aborts_on_first_stage_failure() {
+    // `false` exits 1; the pipeline must abort before `echo` runs.
+    let result = ShellTest::new()
+        .script("false | echo should_not_run")
+        .run();
+    assert!(
+        !result.output().contains("should_not_run"),
+        "pipeline must abort at the first failing stage, got: {:?}",
+        result.output()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_aborts_on_middle_stage_failure() {
+    // `echo a` succeeds, then `false` fails; `echo should_not_run` must not execute.
+    let result = ShellTest::new()
+        .script("echo a | false | echo should_not_run")
+        .run();
+    assert!(
+        !result.output().contains("should_not_run"),
+        "pipeline must abort at the failing middle stage, got: {:?}",
+        result.output()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_last_stage_nonzero_surfaces_error() {
+    // When the last stage fails, the error is reported to the user.
+    let result = ShellTest::new()
+        .script("echo ok | false")
+        .run();
+    assert!(
+        result.error().contains("exited with status"),
+        "expected exit failure in stderr, got: {:?}",
+        result.error()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_all_succeed_no_error() {
+    let result = ShellTest::new()
+        .script("echo hello | cat")
+        .run();
+    result.assert_output_contains("hello");
+    assert!(
+        result.error().is_empty(),
+        "no error expected for successful pipeline, got: {:?}",
+        result.error()
+    );
+}

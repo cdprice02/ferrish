@@ -170,6 +170,13 @@ pub fn execute_pipeline(
         // so a command after a redirect gets a closed (empty) pipe, not the terminal.
         let mut out_buf: Vec<u8> = Vec::new();
         let prev = stdin_buf.take();
+        // Fail-fast for the current serial, buffered pipeline model: any
+        // non-zero exit from an intermediate stage aborts the pipeline
+        // immediately.  This is safe because later stages have not been
+        // spawned yet.  The `?` propagates both NonZeroExit and fatal errors;
+        // the REPL in shell.rs distinguishes them via `is_fatal()`.  Issue #28
+        // tracks replacing this with concurrent OS-level pipes, which will
+        // require explicit wait/reap handling for already-started children.
         execute_stage_capture(
             command, args, io, ctx, stdout_redirect, stderr_redirect, prev.as_deref(), &mut out_buf,
         )?;
