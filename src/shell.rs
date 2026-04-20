@@ -5,7 +5,6 @@ use miette::IntoDiagnostic as _;
 
 use crate::{
     ctx::{ShellConfig, ShellCtx},
-    error::ShellResult,
     executor,
     exit::ExitCode,
     parser,
@@ -79,40 +78,6 @@ impl Shell {
         }
     }
 
-    /// Execute a sequence of command lines as a non-interactive script,
-    /// writing output to the provided `out` and `err` writers.
-    pub fn run_script(
-        &mut self,
-        script: &[&str],
-        out: &mut dyn Write,
-        err: &mut dyn Write,
-    ) -> miette::Result<ExitCode> {
-        for line in script {
-            let buffer = line.as_bytes().trim_ascii();
-            if buffer.is_empty() {
-                continue;
-            }
-
-            let pipeline = parser::parse(buffer).map_err(|e| {
-                miette::Report::new(e)
-                    .with_source_code(String::from_utf8_lossy(buffer).into_owned())
-            })?;
-            if let Some(exit_code) = self.execute_pipeline(pipeline, out, err)? {
-                return Ok(exit_code);
-            }
-        }
-
-        Ok(ExitCode::SUCCESS)
-    }
-
-    fn execute_pipeline(
-        &mut self,
-        pipeline: parser::Pipeline,
-        out: &mut dyn Write,
-        err: &mut dyn Write,
-    ) -> ShellResult<Option<ExitCode>> {
-        executor::execute_pipeline(pipeline, out, err, &mut self.ctx)
-    }
 }
 
 /// Builder for constructing a [`Shell`] with custom configuration.
@@ -162,3 +127,48 @@ impl ShellBuilder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn run_with_prompt(prompt: &str, input: &str) -> String {
+        let mut shell = Shell::builder().with_prompt(prompt.to_string()).build();
+        let mut reader = Cursor::new(input.as_bytes().to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn with_prompt_sets_prompt_string() {
+        let out = run_with_prompt("TEST> ", "");
+        assert!(out.contains("TEST> "), "expected custom prompt in output, got: {out:?}");
+    }
+
+    #[test]
+    fn with_config_sets_prompt() {
+        let config = ShellConfig { prompt: "CFG> ".to_string(), ..Default::default() };
+        let mut shell = Shell::builder().with_config(config).build();
+        let mut reader = Cursor::new(b"".to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        let stdout = String::from_utf8(out).unwrap();
+        assert!(stdout.contains("CFG> "), "expected config prompt, got: {stdout:?}");
+    }
+
+    #[test]
+    fn with_prompt_overrides_with_config_prompt() {
+        let config = ShellConfig { prompt: "CONFIG> ".to_string(), ..Default::default() };
+        let mut shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
+        let mut reader = Cursor::new(b"".to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        let stdout = String::from_utf8(out).unwrap();
+        assert!(stdout.contains("OVERRIDE> "), "expected override prompt, got: {stdout:?}");
+        assert!(!stdout.contains("CONFIG> "), "config prompt should be overridden");
+    }
+}

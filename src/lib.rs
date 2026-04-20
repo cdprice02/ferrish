@@ -37,16 +37,6 @@ pub use shell::Shell;
 /// ```no_run
 /// let result = ferrish::run();
 /// ```
-///
-/// For testing or scripting, use [`Shell::builder()`] with [`Shell::run_script()`]:
-/// ```no_run
-/// use ferrish::Shell;
-///
-/// let mut out = Vec::new();
-/// let mut err = Vec::new();
-/// let exit_code = Shell::builder().build().run_script(&["echo test"], &mut out, &mut err)?;
-/// # Ok::<(), miette::Report>(())
-/// ```
 pub fn run() -> miette::Result<exit::ExitCode> {
     use clap::Parser;
     match cli::Cli::try_parse() {

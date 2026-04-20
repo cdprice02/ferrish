@@ -1,6 +1,7 @@
-mod harness;
+#[allow(dead_code)]
+mod common;
 
-use harness::ShellHarness;
+use common::ShellHarness;
 
 #[test]
 fn repl_shows_prompt_at_startup() {

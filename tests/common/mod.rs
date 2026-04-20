@@ -1,8 +1,3 @@
-// This file is included as `mod harness;` from each integration test binary.
-// Cargo also compiles it as a standalone target, so suppress dead-code lints
-// for items that are used only from the including test files.
-#![allow(dead_code)]
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
