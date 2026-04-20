@@ -1,71 +1,50 @@
-use std::cell::RefCell;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use miette::IntoDiagnostic as _;
 
 use crate::{
-    Command,
-    arg::Args,
     ctx::{ShellConfig, ShellCtx},
-    error::ShellResult,
     executor,
     exit::ExitCode,
-    io::{ShellIo, StandardIo},
     parser,
-    redirect::{StderrRedirection, StdoutRedirection},
 };
 
 /// The ferrish shell REPL.
-///
-/// Generic over an I/O backend; use [`Shell::builder()`] to construct instances.
-pub struct Shell<IO: ShellIo> {
-    io: RefCell<IO>,
+pub struct Shell {
     ctx: ShellCtx,
 }
 
-/// Type alias for a [`Shell`] backed by real stdin/stdout/stderr.
-pub type StandardShell = Shell<StandardIo>;
-
-/// Non-generic entry points: `builder()` doesn't depend on the IO type,
-/// so it lives on the concrete `Shell<StandardIo>` to avoid type-inference ambiguity.
-impl Shell<StandardIo> {
-    /// Create a shell builder
-    ///
-    /// # Example
-    /// ```
-    /// use ferrish::Shell;
-    ///
-    /// let mut shell = Shell::builder()
-    ///     .with_std_io();
-    /// ```
+impl Shell {
+    /// Create a shell builder.
     pub fn builder() -> ShellBuilder {
         ShellBuilder::default()
     }
-}
 
-impl<IO: ShellIo> Shell<IO> {
-    /// Return a shared borrow of the I/O backend.
-    pub fn io(&self) -> std::cell::Ref<'_, IO> {
-        self.io.borrow()
-    }
-
-    /// Return an exclusive borrow of the I/O backend.
-    pub fn io_mut(&'_ mut self) -> std::cell::RefMut<'_, IO> {
-        self.io.borrow_mut()
-    }
-
-    /// Run the interactive REPL loop until `exit` is called or stdin is exhausted.
+    /// Run the interactive REPL loop, reading from stdin and writing to
+    /// stdout/stderr until `exit` is called or stdin is exhausted.
     pub fn run(&mut self) -> miette::Result<ExitCode> {
+        let stdin = std::io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
+        self.run_repl(&mut reader, &mut out, &mut err)
+    }
+
+    /// Run the REPL loop with injectable I/O — useful for testing prompt
+    /// behavior and other REPL properties without spawning a subprocess.
+    pub fn run_repl(
+        &mut self,
+        reader: &mut dyn BufRead,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> miette::Result<ExitCode> {
         loop {
-            {
-                let mut io = self.io.borrow_mut();
-                let w = io.out_writer();
-                w.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
-                w.flush().into_diagnostic()?;
-            }
+            out.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
+            out.flush().into_diagnostic()?;
 
             let mut buffer = Vec::<u8>::new();
-            let bytes = self.io.borrow_mut().read_line(&mut buffer).into_diagnostic()?;
+            let bytes = reader.read_until(b'\n', &mut buffer).into_diagnostic()?;
             if bytes == 0 {
                 return Ok(ExitCode::SUCCESS);
             }
@@ -80,17 +59,17 @@ impl<IO: ShellIo> Shell<IO> {
                 Ok(r) => r,
                 Err(e) => {
                     let report = miette::Report::new(e).with_source_code(make_src());
-                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
+                    writeln!(err, "{report:?}").into_diagnostic()?;
                     continue;
                 }
             };
-            match self.execute_pipeline(pipeline) {
+            match executor::execute_pipeline(pipeline, out, err, &mut self.ctx) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
                     let report = miette::Report::new(e).with_source_code(make_src());
-                    writeln!(self.io.borrow_mut().err_writer(), "{report:?}").into_diagnostic()?;
+                    writeln!(err, "{report:?}").into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);
                     }
@@ -99,60 +78,9 @@ impl<IO: ShellIo> Shell<IO> {
         }
     }
 
-    /// Execute a sequence of command lines as a non-interactive script.
-    pub fn run_script(&mut self, script: &[&str]) -> miette::Result<ExitCode> {
-        for line in script {
-            let buffer = line.as_bytes();
-            let buffer = buffer.trim_ascii();
-
-            if buffer.is_empty() {
-                // TODO: handle comments
-                continue;
-            }
-
-            let pipeline = parser::parse(buffer).map_err(|e| {
-                miette::Report::new(e)
-                    .with_source_code(String::from_utf8_lossy(buffer).into_owned())
-            })?;
-            if let Some(exit_code) = self.execute_pipeline(pipeline)? {
-                return Ok(exit_code);
-            }
-        }
-
-        Ok(ExitCode::SUCCESS)
-    }
-
-    /// Execute a parsed [`Pipeline`], returning an optional exit code.
-    pub fn execute_pipeline(
-        &mut self,
-        pipeline: parser::Pipeline,
-    ) -> ShellResult<Option<ExitCode>> {
-        executor::execute_pipeline(pipeline, &mut *self.io.borrow_mut(), &mut self.ctx)
-    }
-
-    /// Execute a single parsed command, returning an optional exit code.
-    ///
-    /// Calls [`executor::execute`] directly; for callers that already hold a
-    /// decomposed command and do not need pipeline machinery.
-    pub fn execute_command(
-        &mut self,
-        command: Command,
-        args: Args,
-        stdout_redirect: Option<StdoutRedirection>,
-        stderr_redirect: Option<StderrRedirection>,
-    ) -> ShellResult<Option<ExitCode>> {
-        executor::execute(
-            command,
-            args,
-            &mut *self.io.borrow_mut(),
-            &mut self.ctx,
-            stdout_redirect,
-            stderr_redirect,
-        )
-    }
 }
 
-/// Builder for constructing a [`Shell`] with custom I/O and configuration.
+/// Builder for constructing a [`Shell`] with custom configuration.
 #[derive(Default)]
 pub struct ShellBuilder {
     home_dir: Option<PathBuf>,
@@ -161,25 +89,25 @@ pub struct ShellBuilder {
 }
 
 impl ShellBuilder {
-    /// Set an explicit home directory (overrides env HOME / USERPROFILE)
+    /// Set an explicit home directory (overrides env HOME / USERPROFILE).
     pub fn with_home_dir(mut self, path: PathBuf) -> Self {
         self.home_dir = Some(path);
         self
     }
 
-    /// Set an explicit initial working directory (overrides process CWD)
+    /// Set an explicit initial working directory (overrides process CWD).
     pub fn with_cwd(mut self, path: PathBuf) -> Self {
         self.cwd = Some(path);
         self
     }
 
-    /// Override the shell configuration
+    /// Override the shell configuration.
     pub fn with_config(mut self, config: ShellConfig) -> Self {
         self.config = Some(config);
         self
     }
 
-    /// Override only the prompt string
+    /// Override only the prompt string.
     pub fn with_prompt(mut self, prompt: String) -> Self {
         let mut config = self.config.unwrap_or_default();
         config.prompt = prompt;
@@ -187,87 +115,60 @@ impl ShellBuilder {
         self
     }
 
-    fn build_ctx(self) -> ShellCtx {
+    /// Build the [`Shell`].
+    pub fn build(self) -> Shell {
         let base = ShellCtx::from_env();
-        ShellCtx::with_config(
+        let ctx = ShellCtx::with_config(
             self.home_dir.or(base.home_dir),
             self.cwd.unwrap_or(base.cwd),
             self.config.unwrap_or_default(),
-        )
-    }
-
-    /// Configure the shell with standard I/O (stdin/stdout/stderr)
-    ///
-    /// # Example
-    /// ```
-    /// use ferrish::Shell;
-    ///
-    /// let mut shell = Shell::builder()
-    ///     .with_std_io();
-    /// ```
-    pub fn with_std_io(self) -> Shell<StandardIo> {
-        Shell {
-            io: RefCell::new(StandardIo::default()),
-            ctx: self.build_ctx(),
-        }
-    }
-
-    /// Configure the shell with custom I/O
-    ///
-    /// # Example
-    /// ```
-    /// use ferrish::Shell;
-    /// use ferrish::io::MockIo;
-    ///
-    /// let io = MockIo::from_lines(&["echo test", "exit"]);
-    /// let mut shell = Shell::builder()
-    ///     .with_io(io);
-    /// ```
-    pub fn with_io<IO: ShellIo>(self, io: IO) -> Shell<IO> {
-        Shell {
-            io: RefCell::new(io),
-            ctx: self.build_ctx(),
-        }
+        );
+        Shell { ctx }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::MockIo;
-    use crate::Arg;
+    use std::io::Cursor;
 
-    #[test]
-    fn test_shell_execute_command_echo() {
-        let io = MockIo::empty();
-        let mut shell = Shell::builder().with_io(io);
-        let command = Command::BuiltIn(
-            crate::command::builtin::BuiltInCommand::new(
-                crate::command::builtin::BuiltInName::Echo,
-            ),
-        );
-        let args = vec![Arg::from("test"), Arg::from("message")];
-        let result = shell.execute_command(command, args, None, None);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-        {
-            let io_ref = shell.io();
-            let output = io_ref.output();
-            assert_eq!(output, b"test message\n");
-        }
+    fn run_with_prompt(prompt: &str, input: &str) -> String {
+        let mut shell = Shell::builder().with_prompt(prompt.to_string()).build();
+        let mut reader = Cursor::new(input.as_bytes().to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        String::from_utf8(out).unwrap()
     }
 
     #[test]
-    fn test_shell_execute_command_exit() {
-        let io = MockIo::empty();
-        let mut shell = Shell::builder().with_io(io);
-        let command = Command::BuiltIn(
-            crate::command::builtin::BuiltInCommand::new(
-                crate::command::builtin::BuiltInName::Exit,
-            ),
-        );
-        let result = shell.execute_command(command, vec![], None, None);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(ExitCode::SUCCESS));
+    fn with_prompt_sets_prompt_string() {
+        let out = run_with_prompt("TEST> ", "");
+        assert!(out.contains("TEST> "), "expected custom prompt in output, got: {out:?}");
+    }
+
+    #[test]
+    fn with_config_sets_prompt() {
+        let config = ShellConfig { prompt: "CFG> ".to_string(), ..Default::default() };
+        let mut shell = Shell::builder().with_config(config).build();
+        let mut reader = Cursor::new(b"".to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        let stdout = String::from_utf8(out).unwrap();
+        assert!(stdout.contains("CFG> "), "expected config prompt, got: {stdout:?}");
+    }
+
+    #[test]
+    fn with_prompt_overrides_with_config_prompt() {
+        let config = ShellConfig { prompt: "CONFIG> ".to_string(), ..Default::default() };
+        let mut shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
+        let mut reader = Cursor::new(b"".to_vec());
+        let mut out = Vec::<u8>::new();
+        let mut err = Vec::<u8>::new();
+        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
+        let stdout = String::from_utf8(out).unwrap();
+        assert!(stdout.contains("OVERRIDE> "), "expected override prompt, got: {stdout:?}");
+        assert!(!stdout.contains("CONFIG> "), "config prompt should be overridden");
     }
 }
