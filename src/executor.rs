@@ -120,7 +120,7 @@ pub fn execute(
 /// pipeline runs each stage serially: the stdout of stage *i* is buffered then
 /// fed as stdin to stage *i+1*.  For executable stages the data is written into
 /// the child's stdin pipe; built-in stages do not currently consume piped stdin
-/// data.  The last stage's stdout is written to `io` (or to a file if a
+/// data.  The last stage's stdout is written to `out` (or to a file if a
 /// per-stage redirect is present).
 ///
 /// Stdout buffering is intentional for this implementation — issue #28 will

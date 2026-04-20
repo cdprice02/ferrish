@@ -2,6 +2,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use ferrish::fs::canonicalize_path;
+
 const FERRISH_BIN: &str = env!("CARGO_BIN_EXE_ferrish");
 
 /// Subprocess test harness. Always runs in an isolated temp directory so tests
@@ -43,7 +45,10 @@ impl ShellHarness {
     /// Spawn ferrish, feed `script` as stdin (lines separated by `\n`), and
     /// capture stdout/stderr/exit code. The process exits cleanly on stdin EOF.
     pub fn run(self, script: &str) -> ShellOutput {
-        let home = self.temp_dir.path().to_path_buf();
+        // Canonicalize to the long path form; on Windows tempfile may return
+        // short 8.3 paths, but the OS resolves cwd to the long form in `pwd`.
+        let home = canonicalize_path(self.temp_dir.path().to_path_buf())
+            .unwrap_or_else(|_| self.temp_dir.path().to_path_buf());
 
         for dir in &self.setup_dirs {
             std::fs::create_dir_all(home.join(dir)).expect("setup: create dir");
@@ -86,7 +91,9 @@ impl ShellHarness {
 
         let stdin_input = script.to_string();
         let mut stdin = child.stdin.take().expect("take stdin");
-        // Write in a thread to avoid deadlock if the child fills its stdout pipe.
+        // Write stdin on a separate thread so the child can keep making progress
+        // if it is blocked waiting for input or stdin EOF while the parent waits
+        // for process completion and collects its output.
         let writer = std::thread::spawn(move || {
             let _ = stdin.write_all(stdin_input.as_bytes());
         });
