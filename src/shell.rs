@@ -63,7 +63,7 @@ impl Shell {
                     continue;
                 }
             };
-            match executor::execute_pipeline(pipeline, out, err, &mut self.ctx) {
+            match executor::execute_pipeline(pipeline, &mut self.ctx) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {

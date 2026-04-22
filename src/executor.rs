@@ -41,7 +41,6 @@ fn resolve_command_type(name: &[u8]) -> CommandKind {
         if candidate.is_executable() {
             return CommandKind::Executable(candidate);
         }
-        // On Windows executables typically carry a .exe extension
         #[cfg(windows)]
         {
             let candidate_exe = dir.join(format!("{name_str}.exe"));
@@ -66,9 +65,7 @@ fn open_redirect_file(
         cwd.join(target)
     };
     match mode {
-        RedirectMode::Overwrite => {
-            std::fs::File::create(&target_path).map_err(ShellError::Io)
-        }
+        RedirectMode::Overwrite => std::fs::File::create(&target_path).map_err(ShellError::Io),
         RedirectMode::Append => std::fs::OpenOptions::new()
             .append(true)
             .create(true)
@@ -79,97 +76,67 @@ fn open_redirect_file(
 
 /// Resolved stdout destination for one pipeline stage.
 enum StageOutput {
-    /// Intermediate stage: output feeds the next stage's stdin.
+    /// Inter-stage stdout: write end feeds the next stage's stdin.
     Pipe(PipeWriter),
-    /// Any stage with an explicit stdout redirect.
+    /// Explicit stdout redirect: write directly to this file.
     File(std::fs::File),
-    /// Last stage, no redirect: use the shell's output writer.
-    Terminal,
+    /// No redirect (last stage or single command): inherit the process stdout fd.
+    Inherit,
 }
 
 /// Resolved stderr destination for one pipeline stage.
 enum StageError {
-    /// Stage with an explicit stderr redirect.
+    /// Explicit stderr redirect: write directly to this file.
     File(std::fs::File),
-    /// No redirect: write to the shell's error writer (builtins) or inherit
-    /// the process stderr (executables).
-    Terminal,
+    /// No redirect: inherit the process stderr fd. Applies to all stages.
+    Inherit,
 }
 
 /// Handle returned after launching one pipeline stage.
 enum StageHandle {
+    /// A builtin running in a background thread.
+    Thread(JoinHandle<ShellResult<Option<ExitCode>>>),
     /// A spawned OS process.
     Process(Child),
-    /// A builtin running in a background thread (intermediate stage).
-    Thread(JoinHandle<ShellResult<Option<ExitCode>>>),
-    /// A builtin that ran synchronously (last-stage Terminal output).
-    Done(ShellResult<Option<ExitCode>>),
 }
+
 
 /// Single dispatch for launching any pipeline stage — builtin or executable.
 ///
-/// Builtins at intermediate positions (non-Terminal stdout) run in a thread
-/// with an isolated `ctx` clone so their side-effects (e.g. `cd`) don't
-/// propagate back — matching POSIX subshell semantics for pipeline stages.
-/// Builtins at the last stage (Terminal stdout) run synchronously.
-/// Executables always spawn a child process.
-#[allow(clippy::too_many_arguments)]
+/// Both kinds receive resolved IO destinations via [`StageOutput`] and
+/// [`StageError`]. Builtins always run in a thread with a cloned context
+/// (POSIX subshell semantics — side-effects like `cd` don't propagate back).
+/// Executables spawn a child process. The caller waits for the returned
+/// [`StageHandle`]; output flows directly through inherited fds or pipe ends
+/// with no intermediate buffering.
 fn launch_stage(
     command: Command,
     args: Args,
     stdin: Option<PipeReader>,
     stdout: StageOutput,
     stderr: StageError,
-    shell_out: &mut dyn Write,
-    shell_err: &mut dyn Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<StageHandle> {
     match command {
         Command::BuiltIn(builtin) => {
-            drop(stdin); // builtins ignore piped stdin; the closed read end
-                         // sends SIGPIPE/EOF upstream, which is correct
-
-            // Last stage with no stdout redirect: run synchronously so we can
-            // write directly to the shell's `out`/`err` writers (which are not
-            // `Send` and cannot be moved into a thread).
-            if matches!(stdout, StageOutput::Terminal) {
-                let mut err_file: Option<std::fs::File> = match stderr {
-                    StageError::File(f) => Some(f),
-                    StageError::Terminal => None,
-                };
-                let eff_err: &mut dyn Write = match err_file.as_mut() {
-                    Some(f) => f,
-                    None => shell_err,
-                };
-                let result = execute_builtin(&builtin, args, shell_out, eff_err, ctx)
-                    .map_err(|e| ShellError::InCommand {
-                        command: Command::BuiltIn(builtin.clone()),
-                        source: Box::new(e),
-                    });
-                return Ok(StageHandle::Done(result));
-            }
-
-            let stdout_writer: Box<dyn Write + Send> = match stdout {
+            let mut out_w: Box<dyn Write + Send> = match stdout {
                 StageOutput::Pipe(pw) => Box::new(pw),
                 StageOutput::File(f) => Box::new(f),
-                StageOutput::Terminal => unreachable!(),
+                StageOutput::Inherit => Box::new(std::io::stdout()),
             };
-            let stderr_writer: Box<dyn Write + Send> = match stderr {
+            let mut err_w: Box<dyn Write + Send> = match stderr {
                 StageError::File(f) => Box::new(f),
-                StageError::Terminal => Box::new(std::io::stderr()),
+                StageError::Inherit => Box::new(std::io::stderr()),
             };
-
             let mut ctx_clone = ctx.clone();
-            let handle = thread::spawn(move || {
-                let mut out = stdout_writer;
-                let mut err = stderr_writer;
-                execute_builtin(&builtin, args, &mut *out, &mut *err, &mut ctx_clone)
+            let h = thread::spawn(move || {
+                execute_builtin(&builtin, args, stdin, &mut *out_w, &mut *err_w, &mut ctx_clone)
                     .map_err(|e| ShellError::InCommand {
                         command: Command::BuiltIn(builtin),
                         source: Box::new(e),
                     })
             });
-            Ok(StageHandle::Thread(handle))
+            Ok(StageHandle::Thread(h))
         }
 
         Command::Executable(executable) => {
@@ -177,28 +144,24 @@ fn launch_stage(
             let stdout_stdio = match stdout {
                 StageOutput::Pipe(pw) => Stdio::from(pw),
                 StageOutput::File(f) => Stdio::from(f),
-                StageOutput::Terminal => Stdio::piped(),
+                StageOutput::Inherit => Stdio::inherit(),
             };
             let stderr_stdio = match stderr {
                 StageError::File(f) => Stdio::from(f),
-                StageError::Terminal => Stdio::piped(),
+                StageError::Inherit => Stdio::inherit(),
             };
-
             let args_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            let spawn_result = std::process::Command::new(executable.file_path())
+            std::process::Command::new(executable.file_path())
                 .args(args_strs)
                 .current_dir(&ctx.cwd)
                 .stdin(stdin_stdio)
                 .stdout(stdout_stdio)
                 .stderr(stderr_stdio)
                 .spawn()
-                .map_err(ShellError::ExecutionFailed);
-
-            spawn_result
                 .map(StageHandle::Process)
                 .map_err(|e| ShellError::InCommand {
                     command: Command::Executable(executable),
-                    source: Box::new(e),
+                    source: Box::new(ShellError::ExecutionFailed(e)),
                 })
         }
 
@@ -208,211 +171,80 @@ fn launch_stage(
     }
 }
 
-/// Spawn a thread that drains `pipe` into a `Vec<u8>`.
-fn spawn_drain_thread<R: std::io::Read + Send + 'static>(
-    mut pipe: R,
-) -> JoinHandle<std::io::Result<Vec<u8>>> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        std::io::copy(&mut pipe, &mut buf)?;
-        Ok(buf)
-    })
-}
-
-/// Wait for a child process, drain any piped stdout/stderr into `out`/`err`,
-/// and return the exit result.
-fn drain_and_wait(
-    mut child: Child,
-    stdout_drain: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
-    stderr_drain: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> ShellResult<Option<ExitCode>> {
-    let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-    if let Some(t) = stdout_drain {
-        out.write_all(&join_io_thread(t, "stdout")?)?;
-    }
-    if let Some(t) = stderr_drain {
-        err.write_all(&join_io_thread(t, "stderr")?)?;
-    }
-    if !status.success() {
-        return Err(ShellError::NonZeroExit(status));
-    }
-    Ok(None)
-}
-
-/// Collect the result of a single (non-last) pipeline stage.
-/// Intermediate process stderr is piped — drain it and discard (it already
-/// went to the child's own stderr fd chain; we don't re-route it here).
-fn wait_one(handle: StageHandle) -> ShellResult<Option<ExitCode>> {
-    match handle {
-        StageHandle::Done(r) => r,
-        StageHandle::Thread(h) => h.join().unwrap_or_else(|_| {
-            Err(ShellError::Io(std::io::Error::other(
-                "pipeline stage thread panicked",
-            )))
-        }),
-        StageHandle::Process(mut child) => {
-            // Drain and discard intermediate stderr so the child doesn't block
-            // writing to a full pipe buffer. We don't re-route it because
-            // intermediate stages' stderr goes directly to the terminal via
-            // the process hierarchy (the parent ferrish process's stderr fd).
-            // Actually: we piped it above, so we must drain it to avoid
-            // blocking the child. Write it through to the real stderr.
-            let stderr_drain = child.stderr.take().map(spawn_drain_thread);
-            let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-            if let Some(t) = stderr_drain {
-                // Write intermediate stage stderr to real process stderr
-                std::io::stderr().write_all(&join_io_thread(t, "stderr")?)?;
-            }
-            if status.success() {
-                Ok(None)
-            } else {
-                Err(ShellError::NonZeroExit(status))
-            }
-        }
-    }
-}
-
-/// Wait for all launched pipeline stages and collect their results.
+/// Dispatch and execute a single parsed command with optional redirects.
 ///
-/// Drain threads for the last `Process` stage are started *before* waiting
-/// on intermediate stages to prevent deadlock: intermediate processes write
-/// to OS pipes that the last process reads; if the last process's piped stdout
-/// buffer fills up before we drain it, the whole chain stalls.
-fn wait_pipeline(
-    handles: Vec<StageHandle>,
-    shell_out: &mut dyn Write,
-    shell_err: &mut dyn Write,
-) -> ShellResult<Option<ExitCode>> {
-    let mut handles = handles;
-    let last = handles.pop().expect("non-empty pipeline checked at call site");
-
-    // Pre-start drain threads for the last Process's stdout and stderr before
-    // waiting on intermediate stages.
-    let (last_process, last_stdout_drain, last_stderr_drain) = match last {
-        StageHandle::Process(mut c) => {
-            let stdout_drain = c.stdout.take().map(spawn_drain_thread);
-            let stderr_drain = c.stderr.take().map(spawn_drain_thread);
-            (Some(c), stdout_drain, stderr_drain)
-        }
-        other => {
-            handles.push(other);
-            (None, None, None)
-        }
-    };
-
-    let last_non_process = if last_process.is_none() {
-        handles.pop()
-    } else {
-        None
-    };
-
-    let mut first_error: Option<ShellError> = None;
-    let mut exit_request: Option<ExitCode> = None;
-
-    macro_rules! record {
-        ($result:expr) => {
-            match $result {
-                Ok(Some(code)) => exit_request = Some(code),
-                Ok(None) => {}
-                Err(e) if first_error.is_none() => first_error = Some(e),
-                Err(_) => {}
-            }
-        };
-    }
-
-    // Wait for all intermediate stages.
-    for handle in handles {
-        record!(wait_one(handle));
-    }
-
-    // Collect the last stage result.
-    if let Some(mut child) = last_process {
-        let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-        if let Some(t) = last_stdout_drain {
-            shell_out.write_all(&join_io_thread(t, "stdout")?)?;
-        }
-        if let Some(t) = last_stderr_drain {
-            shell_err.write_all(&join_io_thread(t, "stderr")?)?;
-        }
-        if !status.success() && first_error.is_none() {
-            first_error = Some(ShellError::NonZeroExit(status));
-        }
-    } else if let Some(handle) = last_non_process {
-        record!(wait_one(handle));
-    }
-
-    if let Some(e) = first_error {
-        Err(e)
-    } else {
-        Ok(exit_request)
-    }
-}
-
-/// Dispatch and execute a parsed command, returning an optional exit code.
+/// Builtins run synchronously in the caller's `ctx` so state-mutating commands
+/// like `cd` propagate back to the shell — matching POSIX semantics for
+/// commands that are not part of a multi-command pipeline.
 pub fn execute(
     command: Command,
     args: Args,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
 ) -> ShellResult<Option<ExitCode>> {
-    let stdout = if let Some(r) = stdout_redirect {
-        StageOutput::File(open_redirect_file(&r.mode, &r.target, &ctx.cwd)?)
-    } else {
-        StageOutput::Terminal
-    };
-    let stderr = if let Some(r) = stderr_redirect {
-        StageError::File(open_redirect_file(&r.mode, &r.target, &ctx.cwd)?)
-    } else {
-        StageError::Terminal
-    };
+    let mut out_file: Option<std::fs::File> = stdout_redirect
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
+    let mut err_file: Option<std::fs::File> = stderr_redirect
+        .map(|r| open_redirect_file(&r.mode, &r.target, &ctx.cwd))
+        .transpose()?;
 
-    let handle = launch_stage(command, args, None, stdout, stderr, out, err, ctx)?;
-    match handle {
-        StageHandle::Done(r) => r,
-        StageHandle::Thread(h) => h.join().unwrap_or_else(|_| {
-            Err(ShellError::Io(std::io::Error::other(
-                "builtin thread panicked",
-            )))
-        }),
-        StageHandle::Process(mut child) => {
-            let stdout_drain = child.stdout.take().map(spawn_drain_thread);
-            let stderr_drain = child.stderr.take().map(spawn_drain_thread);
-            drain_and_wait(child, stdout_drain, stderr_drain, out, err)
+    match command {
+        Command::BuiltIn(builtin) => {
+            let mut stdout_default = std::io::stdout();
+            let mut stderr_default = std::io::stderr();
+            let out: &mut dyn Write = out_file.as_mut().map_or(&mut stdout_default as _, |f| f);
+            let err: &mut dyn Write = err_file.as_mut().map_or(&mut stderr_default as _, |f| f);
+            execute_builtin(&builtin, args, None, out, err, ctx).map_err(|e| {
+                ShellError::InCommand { command: Command::BuiltIn(builtin), source: Box::new(e) }
+            })
         }
+        Command::Executable(executable) => {
+            let stdout_stdio = out_file.map_or(Stdio::inherit(), Stdio::from);
+            let stderr_stdio = err_file.map_or(Stdio::inherit(), Stdio::from);
+            let args_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let mut child = std::process::Command::new(executable.file_path())
+                .args(args_strs)
+                .current_dir(&ctx.cwd)
+                .stdin(Stdio::inherit())
+                .stdout(stdout_stdio)
+                .stderr(stderr_stdio)
+                .spawn()
+                .map_err(|e| ShellError::InCommand {
+                    command: Command::Executable(executable),
+                    source: Box::new(ShellError::ExecutionFailed(e)),
+                })?;
+            let status = child.wait().map_err(ShellError::ExecutionFailed)?;
+            if status.success() { Ok(None) } else { Err(ShellError::NonZeroExit(status)) }
+        }
+        Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
+            name: String::from_utf8_lossy(&cmd).into_owned(),
+        }),
     }
 }
 
 /// Execute a [`Pipeline`] (one or more `|`-connected commands).
 ///
-/// A single-stage pipeline delegates to [`execute`] unchanged. A multi-stage
-/// pipeline creates N-1 OS-level pipes, launches all N stages concurrently
-/// (executables as child processes, builtins in threads), then waits for all.
-/// Data flows directly between processes via kernel pipe buffers — no
-/// in-memory buffering between stages.
+/// A single-stage pipeline delegates to [`execute`]. A multi-stage pipeline
+/// creates N-1 OS-level inter-stage pipes, launches all N stages concurrently,
+/// and waits for all. Data flows between stages via kernel pipe buffers with no
+/// in-process buffering; output of the last stage goes to the inherited process
+/// stdout and stderr fds.
 ///
 /// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(
     pipeline: Pipeline,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
     if pipeline.len() == 1 {
         let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
-        return execute(cmd, args, out, err, ctx, stdout_redir, stderr_redir);
+        return execute(cmd, args, ctx, stdout_redir, stderr_redir);
     }
 
     let stages: Vec<_> = pipeline.into_iter().collect();
     let n = stages.len();
 
-    // Create N-1 inter-stage pipes.  Both ends are consumed by launch_stage
-    // (moved into Stdio::from or a thread closure), so the parent holds no
-    // open pipe ends after the launch loop — no manual cleanup needed.
     let pipe_pairs: std::io::Result<Vec<_>> = (0..n - 1).map(|_| std::io::pipe()).collect();
     let (mut readers, mut writers): (Vec<_>, Vec<_>) = pipe_pairs
         .map_err(ShellError::Io)?
@@ -432,24 +264,49 @@ pub fn execute_pipeline(
         } else if i < n - 1 {
             StageOutput::Pipe(writers[i].take().unwrap())
         } else {
-            StageOutput::Terminal
+            StageOutput::Inherit
         };
 
-        let stderr = if let Some(r) = stderr_redirect {
-            StageError::File(open_redirect_file(&r.mode, &r.target, &ctx.cwd)?)
-        } else {
-            StageError::Terminal
+        let stderr = match stderr_redirect {
+            Some(r) => StageError::File(open_redirect_file(&r.mode, &r.target, &ctx.cwd)?),
+            None => StageError::Inherit,
         };
 
-        handles.push(launch_stage(command, args, stdin, stdout, stderr, out, err, ctx)?);
+        handles.push(launch_stage(command, args, stdin, stdout, stderr, ctx)?);
     }
 
-    wait_pipeline(handles, out, err)
+    let mut first_error: Option<ShellError> = None;
+    let mut exit_request: Option<ExitCode> = None;
+
+    for handle in handles {
+        let result = match handle {
+            StageHandle::Thread(h) => h.join().unwrap_or_else(|_| {
+                Err(ShellError::Io(std::io::Error::other("pipeline stage thread panicked")))
+            }),
+            StageHandle::Process(mut child) => {
+                let status = child.wait().map_err(ShellError::ExecutionFailed)?;
+                if status.success() { Ok(None) } else { Err(ShellError::NonZeroExit(status)) }
+            }
+        };
+        match result {
+            Ok(Some(code)) => exit_request = Some(code),
+            Ok(None) => {}
+            Err(e) if first_error.is_none() => first_error = Some(e),
+            Err(_) => {}
+        }
+    }
+
+    if let Some(e) = first_error {
+        Err(e)
+    } else {
+        Ok(exit_request)
+    }
 }
 
 fn execute_builtin(
     builtin: &BuiltInCommand,
     args: Args,
+    _stdin: Option<PipeReader>,
     out: &mut dyn Write,
     err: &mut dyn Write,
     ctx: &mut ShellCtx,
@@ -505,7 +362,6 @@ fn execute_echo(args: Args, out: &mut dyn Write) -> ShellResult<()> {
             .collect::<Vec<_>>()
             .join(" ")
     )?;
-
     Ok(())
 }
 
@@ -522,55 +378,18 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
             writeln!(out, "{} is a shell builtin", builtin_name)?
         }
         CommandKind::Executable(path) => {
-            let display_name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let display_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             writeln!(out, "{} is {}", display_name, path.display())?
         }
-        CommandKind::NotFound => return Err(ShellError::CommandNotFound { name: arg.to_string() }),
+        CommandKind::NotFound => {
+            return Err(ShellError::CommandNotFound { name: arg.to_string() })
+        }
     }
 
     Ok(())
 }
 
-fn execute_pwd(
-    _args: Args,
-    out: &mut dyn Write,
-    ctx: &ShellCtx,
-) -> ShellResult<()> {
+fn execute_pwd(_args: Args, out: &mut dyn Write, ctx: &ShellCtx) -> ShellResult<()> {
     writeln!(out, "{}", ctx.cwd.display())?;
     Ok(())
-}
-
-/// Join an I/O drain thread and convert both join-failure and I/O errors into
-/// a non-fatal [`ShellError::Io`].  `stream` names the pipe ("stdout"/"stderr")
-/// and is included in the panic-message for easier debugging.
-fn join_io_thread(
-    handle: JoinHandle<std::io::Result<Vec<u8>>>,
-    stream: &str,
-) -> ShellResult<Vec<u8>> {
-    handle
-        .join()
-        .unwrap_or_else(|_| {
-            Err(std::io::Error::other(format!(
-                "{stream} I/O thread panicked"
-            )))
-        })
-        .map_err(ShellError::Io)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn join_io_thread_panic_becomes_non_fatal_io_error() {
-        let handle = std::thread::spawn(|| -> std::io::Result<Vec<u8>> { panic!("simulated OOM") });
-        let result = join_io_thread(handle, "stdout");
-        let err = result.expect_err("expected Err from panicking thread");
-        assert!(!err.is_fatal());
-        assert!(matches!(err, ShellError::Io(_)));
-        assert!(err.to_string().contains("stdout"));
-    }
 }
