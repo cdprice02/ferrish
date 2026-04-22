@@ -125,18 +125,21 @@ fn pipeline_builtin_receives_piped_stdin() {
 
 #[cfg(unix)]
 #[test]
-fn pipeline_aborts_on_first_stage_failure() {
+fn pipeline_first_stage_failure_surfaces_error() {
+    // With concurrent execution, builtin stages run before we can observe
+    // an earlier executable failure — matching POSIX bash behavior.  The
+    // important invariant is that the failure is still reported.
     ShellHarness::new()
         .run("false | echo should_not_run")
-        .assert_stdout_not_contains("should_not_run");
+        .assert_stderr_contains("exited with");
 }
 
 #[cfg(unix)]
 #[test]
-fn pipeline_aborts_on_middle_stage_failure() {
+fn pipeline_middle_stage_failure_surfaces_error() {
     ShellHarness::new()
         .run("echo a | false | echo should_not_run")
-        .assert_stdout_not_contains("should_not_run");
+        .assert_stderr_contains("exited with");
 }
 
 #[cfg(unix)]
@@ -154,4 +157,34 @@ fn pipeline_all_stages_succeed_no_error() {
         .run("echo hello | cat")
         .assert_stdout_contains("hello")
         .assert_stderr_empty();
+}
+
+// --- OS-level concurrent pipe correctness ---
+
+#[cfg(unix)]
+#[test]
+fn pipeline_large_data_no_deadlock() {
+    // Pipe more than a single pipe-buffer's worth of data (64 KB on Linux)
+    // through a 3-stage pipeline.  A serial/buffered implementation would
+    // not deadlock here, but a concurrent implementation with a misconfigured
+    // drain would.  Primarily validates that the OS-level pipe model does not
+    // stall under backpressure.
+    let out = ShellHarness::new().run("yes | head -c 131072 | wc -c");
+    let count: usize = out
+        .stdout()
+        .split_whitespace()
+        .find_map(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("expected byte count in: {:?}", out.stdout()));
+    assert_eq!(count, 131072, "expected 131072 bytes through pipeline");
+}
+
+#[cfg(unix)]
+#[test]
+fn pipeline_builtin_cd_in_middle_does_not_change_shell_cwd() {
+    // A `cd` builtin in a non-last pipeline position runs in a cloned ctx
+    // (POSIX subshell semantics).  The shell's working directory must be
+    // unaffected after the pipeline completes.
+    let out = ShellHarness::new().run("echo x | cd /tmp | cat\npwd");
+    // pwd should print the temp home dir, not /tmp
+    out.assert_stdout_not_contains("/tmp");
 }
