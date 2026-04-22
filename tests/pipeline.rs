@@ -184,7 +184,8 @@ fn pipeline_builtin_cd_in_middle_does_not_change_shell_cwd() {
     // A `cd` builtin in a non-last pipeline position runs in a cloned ctx
     // (POSIX subshell semantics).  The shell's working directory must be
     // unaffected after the pipeline completes.
-    let out = ShellHarness::new().run("echo x | cd /tmp | cat\npwd");
-    // pwd should print the temp home dir, not /tmp
-    out.assert_stdout_not_contains("/tmp");
+    let out = ShellHarness::new().run("echo x | cd / | cat\npwd");
+    // pwd should print the temp home dir, not /
+    let home = out.home_dir().to_string_lossy().into_owned();
+    out.assert_stdout_contains(&home);
 }
