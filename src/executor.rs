@@ -95,9 +95,9 @@ enum StageError {
 /// Handle returned after launching one pipeline stage.
 enum StageHandle {
     /// A builtin running in a background thread.
-    Thread(JoinHandle<ShellResult<Option<ExitCode>>>),
+    Thread(JoinHandle<ShellResult<Option<ExitCode>>>, Command),
     /// A spawned OS process.
-    Process(Child),
+    Process(Child, Command),
 }
 
 
@@ -119,6 +119,7 @@ fn launch_stage(
 ) -> ShellResult<StageHandle> {
     match command {
         Command::BuiltIn(builtin) => {
+            let cmd_for_handle = Command::BuiltIn(builtin.clone());
             let mut out_w: Box<dyn Write + Send> = match stdout {
                 StageOutput::Pipe(pw) => Box::new(pw),
                 StageOutput::File(f) => Box::new(f),
@@ -136,7 +137,7 @@ fn launch_stage(
                         source: Box::new(e),
                     })
             });
-            Ok(StageHandle::Thread(h))
+            Ok(StageHandle::Thread(h, cmd_for_handle))
         }
 
         Command::Executable(executable) => {
@@ -151,18 +152,20 @@ fn launch_stage(
                 StageError::Inherit => Stdio::inherit(),
             };
             let args_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            std::process::Command::new(executable.file_path())
+            match std::process::Command::new(executable.file_path())
                 .args(args_strs)
                 .current_dir(&ctx.cwd)
                 .stdin(stdin_stdio)
                 .stdout(stdout_stdio)
                 .stderr(stderr_stdio)
                 .spawn()
-                .map(StageHandle::Process)
-                .map_err(|e| ShellError::InCommand {
+            {
+                Ok(child) => Ok(StageHandle::Process(child, Command::Executable(executable))),
+                Err(e) => Err(ShellError::InCommand {
                     command: Command::Executable(executable),
                     source: Box::new(ShellError::ExecutionFailed(e)),
-                })
+                }),
+            }
         }
 
         Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
@@ -212,11 +215,21 @@ pub fn execute(
                 .stderr(stderr_stdio)
                 .spawn()
                 .map_err(|e| ShellError::InCommand {
-                    command: Command::Executable(executable),
+                    command: Command::Executable(executable.clone()),
                     source: Box::new(ShellError::ExecutionFailed(e)),
                 })?;
-            let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-            if status.success() { Ok(None) } else { Err(ShellError::NonZeroExit(status)) }
+            let status = child.wait().map_err(|e| ShellError::InCommand {
+                command: Command::Executable(executable.clone()),
+                source: Box::new(ShellError::ExecutionFailed(e)),
+            })?;
+            if status.success() {
+                Ok(None)
+            } else {
+                Err(ShellError::InCommand {
+                    command: Command::Executable(executable),
+                    source: Box::new(ShellError::NonZeroExit(status)),
+                })
+            }
         }
         Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
             name: String::from_utf8_lossy(&cmd).into_owned(),
@@ -232,7 +245,7 @@ pub fn execute(
 /// in-process buffering; output of the last stage goes to the inherited process
 /// stdout and stderr fds.
 ///
-/// Returns `Ok(Some(code))` when any stage requests shell exit, `Ok(None)` otherwise.
+/// Returns `Ok(Some(code))` when the last stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(
     pipeline: Pipeline,
     ctx: &mut ShellCtx,
@@ -260,6 +273,9 @@ pub fn execute_pipeline(
         let stdin: Option<PipeReader> = if i == 0 { None } else { readers[i - 1].take() };
 
         let stdout = if let Some(r) = stdout_redirect {
+            if i < n - 1 {
+                writers[i].take(); // close write end so downstream sees EOF
+            }
             StageOutput::File(open_redirect_file(&r.mode, &r.target, &ctx.cwd)?)
         } else if i < n - 1 {
             StageOutput::Pipe(writers[i].take().unwrap())
@@ -272,26 +288,61 @@ pub fn execute_pipeline(
             None => StageError::Inherit,
         };
 
-        handles.push(launch_stage(command, args, stdin, stdout, stderr, ctx)?);
+        match launch_stage(command, args, stdin, stdout, stderr, ctx) {
+            Ok(handle) => handles.push(handle),
+            Err(launch_err) => {
+                drop(readers);
+                drop(writers);
+                for handle in handles {
+                    match handle {
+                        StageHandle::Thread(h, _) => { let _ = h.join(); }
+                        StageHandle::Process(mut child, _) => { let _ = child.wait(); }
+                    }
+                }
+                return Err(launch_err);
+            }
+        }
     }
 
     let mut first_error: Option<ShellError> = None;
     let mut exit_request: Option<ExitCode> = None;
+    let last = n - 1;
 
-    for handle in handles {
+    for (i, handle) in handles.into_iter().enumerate() {
         let result = match handle {
-            StageHandle::Thread(h) => h.join().unwrap_or_else(|_| {
-                Err(ShellError::Io(std::io::Error::other("pipeline stage thread panicked")))
+            StageHandle::Thread(h, command) => h.join().unwrap_or_else(|_| {
+                Err(ShellError::InCommand {
+                    command,
+                    source: Box::new(ShellError::Io(std::io::Error::other(
+                        "pipeline stage thread panicked",
+                    ))),
+                })
             }),
-            StageHandle::Process(mut child) => {
-                let status = child.wait().map_err(ShellError::ExecutionFailed)?;
-                if status.success() { Ok(None) } else { Err(ShellError::NonZeroExit(status)) }
+            StageHandle::Process(mut child, command) => {
+                let status = child.wait().map_err(|e| ShellError::InCommand {
+                    command: command.clone(),
+                    source: Box::new(ShellError::ExecutionFailed(e)),
+                })?;
+                if status.success() {
+                    Ok(None)
+                } else {
+                    Err(ShellError::InCommand {
+                        command,
+                        source: Box::new(ShellError::NonZeroExit(status)),
+                    })
+                }
             }
         };
         match result {
-            Ok(Some(code)) => exit_request = Some(code),
-            Ok(None) => {}
-            Err(e) if first_error.is_none() => first_error = Some(e),
+            Ok(Some(code)) if i == last => exit_request = Some(code),
+            Ok(_) => {}
+            Err(e) if first_error.is_none() => {
+                if i < last && is_broken_pipe(&e) {
+                    // upstream stage killed by downstream exit — expected, not an error
+                } else {
+                    first_error = Some(e);
+                }
+            }
             Err(_) => {}
         }
     }
@@ -301,6 +352,26 @@ pub fn execute_pipeline(
     } else {
         Ok(exit_request)
     }
+}
+
+fn is_broken_pipe(e: &ShellError) -> bool {
+    match e {
+        ShellError::Io(io_err) => io_err.kind() == std::io::ErrorKind::BrokenPipe,
+        ShellError::InCommand { source, .. } => is_broken_pipe(source),
+        ShellError::NonZeroExit(status) => exit_status_is_sigpipe(status),
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn exit_status_is_sigpipe(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(13) // SIGPIPE
+}
+
+#[cfg(not(unix))]
+fn exit_status_is_sigpipe(_: &std::process::ExitStatus) -> bool {
+    false
 }
 
 fn execute_builtin(
