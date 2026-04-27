@@ -100,6 +100,18 @@ pub enum ShellError {
         #[label("quote opened here")]
         span: SourceSpan,
     },
+
+    /// A pipeline segment (between `|` operators) is empty.
+    #[error("syntax error near unexpected token `|'")]
+    #[diagnostic(
+        code(ferrish::parse::empty_pipeline_segment),
+        help("each `|` must be preceded and followed by a command")
+    )]
+    EmptyPipelineSegment {
+        /// Byte offset of the `|` operator that produced an empty segment.
+        #[label("unexpected token")]
+        span: SourceSpan,
+    },
 }
 
 impl std::borrow::Borrow<dyn miette::Diagnostic> for Box<ShellError> {
@@ -134,6 +146,10 @@ impl PartialEq for ShellError {
                     span: r_span,
                 },
             ) => l_style == r_style && l_span == r_span,
+            (
+                Self::EmptyPipelineSegment { span: l_span },
+                Self::EmptyPipelineSegment { span: r_span },
+            ) => l_span == r_span,
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }
