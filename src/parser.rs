@@ -40,9 +40,20 @@ pub type Pipeline = Vec<PipelineStage>;
 /// appears inside quotes is treated as a literal argument character.
 pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
     let segments = split_pipeline_segments(buffer);
-    for segment in &segments {
+    for (i, segment) in segments.iter().enumerate() {
         if segment.trim_ascii().is_empty() {
-            return Err(ShellError::EmptyPipelineSegment);
+            let seg_offset = segment.as_ptr() as usize - buffer.as_ptr() as usize;
+            // The `|` that produced this empty segment is either:
+            // - after the segment for leading/middle empties (segment ends just before the `|`)
+            // - before the segment for trailing empties (the last segment has no following `|`)
+            let pipe_offset = if i + 1 < segments.len() {
+                seg_offset + segment.len()
+            } else {
+                seg_offset.saturating_sub(1)
+            };
+            return Err(ShellError::EmptyPipelineSegment {
+                span: SourceSpan::from((pipe_offset, 1)),
+            });
         }
     }
     let mut pipeline = Vec::with_capacity(segments.len());
@@ -985,25 +996,84 @@ mod tests {
     #[test]
     fn test_trailing_pipe_returns_empty_segment_error() {
         let err = parse(b"echo hello |").unwrap_err();
-        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+        assert!(
+            matches!(err, ShellError::EmptyPipelineSegment { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_trailing_pipe_span_points_at_pipe() {
+        // "echo hello |" — `|` is at byte 11
+        let err = parse(b"echo hello |").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span } = err {
+            assert_eq!(span.offset(), 11, "`|` is at byte 11 in 'echo hello |'");
+            assert_eq!(span.len(), 1);
+        } else {
+            panic!("expected EmptyPipelineSegment");
+        }
     }
 
     #[test]
     fn test_leading_pipe_returns_empty_segment_error() {
         let err = parse(b"| cat").unwrap_err();
-        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+        assert!(
+            matches!(err, ShellError::EmptyPipelineSegment { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_leading_pipe_span_points_at_pipe() {
+        // "| cat" — `|` is at byte 0
+        let err = parse(b"| cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span } = err {
+            assert_eq!(span.offset(), 0, "`|` is at byte 0 in '| cat'");
+            assert_eq!(span.len(), 1);
+        } else {
+            panic!("expected EmptyPipelineSegment");
+        }
     }
 
     #[test]
     fn test_empty_middle_segment_returns_error() {
         let err = parse(b"echo a | | cat").unwrap_err();
-        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+        assert!(
+            matches!(err, ShellError::EmptyPipelineSegment { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_empty_middle_segment_span_points_at_second_pipe() {
+        // "echo a | | cat" — second `|` is at byte 9
+        let err = parse(b"echo a | | cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span } = err {
+            assert_eq!(span.offset(), 9, "second `|` is at byte 9 in 'echo a | | cat'");
+            assert_eq!(span.len(), 1);
+        } else {
+            panic!("expected EmptyPipelineSegment");
+        }
     }
 
     #[test]
     fn test_whitespace_only_segment_returns_error() {
         let err = parse(b"echo a |   | cat").unwrap_err();
-        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+        assert!(
+            matches!(err, ShellError::EmptyPipelineSegment { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_whitespace_only_segment_span_points_at_second_pipe() {
+        // "echo a |   | cat" — second `|` is at byte 11
+        let err = parse(b"echo a |   | cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span } = err {
+            assert_eq!(span.offset(), 11, "second `|` is at byte 11 in 'echo a |   | cat'");
+        } else {
+            panic!("expected EmptyPipelineSegment");
+        }
     }
 
     #[test]

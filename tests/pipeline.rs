@@ -165,21 +165,26 @@ fn pipeline_all_stages_succeed_no_error() {
 fn trailing_pipe_reports_error_and_continues() {
     let out = ShellHarness::new().run("echo hello |\necho survived");
     out.assert_stderr_contains("|")
-        .assert_stdout_contains("survived");
+        .assert_stdout_contains("survived")
+        .assert_stdout_not_contains("hello")
+        .assert_exit_code(0);
 }
 
 #[test]
 fn leading_pipe_reports_error_and_continues() {
     let out = ShellHarness::new().run("| cat\necho survived");
     out.assert_stderr_contains("|")
-        .assert_stdout_contains("survived");
+        .assert_stdout_contains("survived")
+        .assert_exit_code(0);
 }
 
 #[test]
 fn empty_middle_segment_reports_error_and_continues() {
     let out = ShellHarness::new().run("echo a | | cat\necho survived");
     out.assert_stderr_contains("|")
-        .assert_stdout_contains("survived");
+        .assert_stdout_contains("survived")
+        .assert_stdout_not_contains("a\n")
+        .assert_exit_code(0);
 }
 
 // --- OS-level concurrent pipe correctness ---
