@@ -377,11 +377,12 @@ fn exit_status_is_sigpipe(_: &std::process::ExitStatus) -> bool {
 fn execute_builtin(
     builtin: &BuiltInCommand,
     args: Args,
-    _stdin: Option<PipeReader>,
+    stdin: Option<PipeReader>,
     out: &mut dyn Write,
     err: &mut dyn Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
+    let _stdin_guard = stdin; // keep read end open until builtin completes
     match builtin.name() {
         BuiltInName::Exit => {
             let code = match args.first() {
