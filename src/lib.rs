@@ -19,6 +19,8 @@ pub mod executor;
 pub mod exit;
 /// Filesystem path utilities.
 pub mod fs;
+/// Raw input line with trimmed view and leading-offset pre-computed.
+pub mod input;
 /// Input parsing: splits raw bytes into a command and its arguments.
 pub mod parser;
 /// I/O redirection descriptors produced by the parser.

@@ -9,6 +9,7 @@ use crate::command::executable::ExecutableCommand;
 use crate::command::{Command, builtin};
 use crate::env::get_path_files;
 use crate::error::ShellError;
+use crate::input::Input;
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
 /// One stage of a pipeline: the command to run, its arguments, and any
@@ -38,7 +39,8 @@ pub type Pipeline = Vec<PipelineStage>;
 /// When the same fd appears more than once, the **last** operator wins.
 /// Only unquoted redirect operators are recognised; an operator character that
 /// appears inside quotes is treated as a literal argument character.
-pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
+pub fn parse(input: &Input) -> Result<Pipeline, ShellError> {
+    let buffer = input.trimmed_bytes();
     let segments = split_pipeline_segments(buffer);
     for (i, segment) in segments.iter().enumerate() {
         if segment.trim_ascii().is_empty() {
@@ -52,40 +54,27 @@ pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
                 seg_offset.saturating_sub(1)
             };
             return Err(ShellError::EmptyPipelineSegment {
-                span: SourceSpan::from((pipe_offset, 1)),
+                span: SourceSpan::from((input.leading_offset() + pipe_offset, 1)),
+                src: input.as_source(),
             });
         }
     }
     let mut pipeline = Vec::with_capacity(segments.len());
     for segment in segments {
-        // Compute the segment's byte offset within the original buffer via
-        // pointer arithmetic so that error spans are relative to the full line.
-        // Also account for leading whitespace that `split_command_and_args`
-        // trims internally — without this correction, spans in later pipeline
-        // stages would be off by the number of leading spaces after `|`.
-        let offset = segment.as_ptr() as usize - buffer.as_ptr() as usize;
-        let leading_ws = segment.len() - segment.trim_ascii_start().len();
-        pipeline.push(parse_segment(segment).map_err(|e| adjust_span(e, offset + leading_ws))?);
+        // Absolute byte offset of this segment's first byte within the raw input.
+        let abs_start = input.leading_offset() + (segment.as_ptr() as usize - buffer.as_ptr() as usize);
+        pipeline.push(parse_segment(segment, abs_start, input)?);
     }
     Ok(pipeline)
 }
 
-/// Shift a [`ShellError::UnclosedQuote`] span by `delta` bytes so it is
-/// relative to the full input line rather than the per-segment slice.
-fn adjust_span(error: ShellError, delta: usize) -> ShellError {
-    match error {
-        ShellError::UnclosedQuote { style, span } => ShellError::UnclosedQuote {
-            style,
-            span: SourceSpan::from((span.offset() + delta, span.len())),
-        },
-        other => other,
-    }
-}
-
 /// Parse a single pipeline segment (bytes between `|` operators) into a
 /// [`PipelineStage`].
-fn parse_segment(buffer: &[u8]) -> Result<PipelineStage, ShellError> {
-    let (command, raw_args) = split_command_and_args(buffer)?;
+///
+/// `abs_start` is the byte offset of `buffer[0]` within the raw input line,
+/// used to anchor all diagnostic spans to the original string.
+fn parse_segment(buffer: &[u8], abs_start: usize, input: &Input) -> Result<PipelineStage, ShellError> {
+    let (command, raw_args) = split_command_and_args(buffer, abs_start, input)?;
     let command = parse_command(&command);
 
     let (args, stdout_redirect, stderr_redirect) = extract_redirects(raw_args);
@@ -214,7 +203,7 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     (out_args, stdout_redirect, stderr_redirect)
 }
 
-/// Split the trimmed input buffer into a command token and zero or more argument tokens.
+/// Split a pipeline segment into a command token and zero or more argument tokens.
 ///
 /// Handles single-quoted strings: characters inside `'...'` are treated literally —
 /// whitespace is preserved (not used as a delimiter) and backslashes have no special
@@ -230,8 +219,11 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
 /// Adjacent quoted and unquoted segments are concatenated into a single token.
 ///
 /// Returns `Err(ShellError::UnclosedQuote)` if a quote is opened but never closed.
-fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), ShellError> {
-    let buffer = buffer.trim_ascii();
+fn split_command_and_args(
+    buffer: &[u8],
+    abs_start: usize,
+    input: &Input,
+) -> Result<(Vec<u8>, Vec<RawArg>), ShellError> {
     let mut parts: Vec<(Vec<u8>, QuoteStyle)> = Vec::new();
 
     let mut current: Vec<u8> = Vec::new();
@@ -239,7 +231,7 @@ fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), Shell
     let mut in_double_quote = false;
     let mut token_started = false;
     let mut token_style: Option<QuoteStyle> = None;
-    // Byte offset of the opening quote character (relative to the trimmed buffer).
+    // Absolute byte offset of the opening quote character within the raw input.
     let mut quote_open_pos: usize = 0;
 
     let mut i = 0;
@@ -282,7 +274,7 @@ fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), Shell
             };
         } else if byte == b'\'' {
             in_single_quote = true;
-            quote_open_pos = i;
+            quote_open_pos = abs_start + i;
             token_started = true;
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Single);
@@ -291,7 +283,7 @@ fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), Shell
             }
         } else if byte == b'"' {
             in_double_quote = true;
-            quote_open_pos = i;
+            quote_open_pos = abs_start + i;
             token_started = true;
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Double);
@@ -320,12 +312,14 @@ fn split_command_and_args(buffer: &[u8]) -> Result<(Vec<u8>, Vec<RawArg>), Shell
         return Err(ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((quote_open_pos, 1)),
+            src: input.as_source(),
         });
     }
     if in_double_quote {
         return Err(ShellError::UnclosedQuote {
             style: QuoteStyle::Double,
             span: SourceSpan::from((quote_open_pos, 1)),
+            src: input.as_source(),
         });
     }
 
@@ -378,16 +372,22 @@ pub fn parse_arg(arg: &[u8]) -> Arg {
 mod tests {
     use super::*;
 
+    fn parse_raw(raw: &[u8]) -> Result<Pipeline, ShellError> {
+        parse(&Input::new(raw))
+    }
+
     // Helper: split and return command + arg bytes (quoting metadata stripped).
     fn split(input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
-        let (cmd, args) = split_command_and_args(input).unwrap();
+        let src = Input::new(input);
+        let (cmd, args) = split_command_and_args(input, 0, &src).unwrap();
         let arg_bytes = args.into_iter().map(|(b, _)| b).collect();
         (cmd, arg_bytes)
     }
 
     // Helper: split and return command + (bytes, style) pairs.
     fn split_styled(input: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
-        split_command_and_args(input).unwrap()
+        let src = Input::new(input);
+        split_command_and_args(input, 0, &src).unwrap()
     }
 
     #[test]
@@ -670,24 +670,21 @@ mod tests {
 
     #[test]
     fn test_unclosed_double_quote_returns_error() {
-        let result = split_command_and_args(b"echo \"hello");
+        let buf = b"echo \"hello";
+        let src = Input::new(buf);
+        let result = split_command_and_args(buf, 0, &src);
         let err = result.unwrap_err();
         assert!(
-            matches!(
-                err,
-                ShellError::UnclosedQuote {
-                    style: QuoteStyle::Double,
-                    ..
-                }
-            ),
+            matches!(err, ShellError::UnclosedQuote { style: QuoteStyle::Double, .. }),
             "expected UnclosedQuote(Double), got: {err:?}"
         );
     }
 
     #[test]
     fn test_unclosed_double_quote_span_offset() {
-        let result = split_command_and_args(b"echo \"hello");
-        let err = result.unwrap_err();
+        let buf = b"echo \"hello";
+        let src = Input::new(buf);
+        let err = split_command_and_args(buf, 0, &src).unwrap_err();
         if let ShellError::UnclosedQuote { span, .. } = err {
             assert_eq!(span.offset(), 5, "quote opens at byte 5 in 'echo \"hello'");
         } else {
@@ -697,24 +694,21 @@ mod tests {
 
     #[test]
     fn test_unclosed_single_quote_returns_error() {
-        let result = split_command_and_args(b"echo 'hello");
+        let buf = b"echo 'hello";
+        let src = Input::new(buf);
+        let result = split_command_and_args(buf, 0, &src);
         let err = result.unwrap_err();
         assert!(
-            matches!(
-                err,
-                ShellError::UnclosedQuote {
-                    style: QuoteStyle::Single,
-                    ..
-                }
-            ),
+            matches!(err, ShellError::UnclosedQuote { style: QuoteStyle::Single, .. }),
             "expected UnclosedQuote(Single), got: {err:?}"
         );
     }
 
     #[test]
     fn test_unclosed_single_quote_span_offset() {
-        let result = split_command_and_args(b"echo 'hello");
-        let err = result.unwrap_err();
+        let buf = b"echo 'hello";
+        let src = Input::new(buf);
+        let err = split_command_and_args(buf, 0, &src).unwrap_err();
         if let ShellError::UnclosedQuote { span, .. } = err {
             assert_eq!(span.offset(), 5, "quote opens at byte 5 in \"echo 'hello\"");
         } else {
@@ -724,33 +718,31 @@ mod tests {
 
     #[test]
     fn test_unclosed_quote_is_non_fatal() {
-        let result = split_command_and_args(b"echo \"unterminated");
-        let err = result.unwrap_err();
+        let buf = b"echo \"unterminated";
+        let src = Input::new(buf);
+        let err = split_command_and_args(buf, 0, &src).unwrap_err();
         assert!(!err.is_fatal());
     }
 
     #[test]
     fn test_pipeline_unclosed_quote_span_accounts_for_leading_whitespace() {
         // The second segment has one leading space after `|`.
-        // The `"` opens at byte 5 within the trimmed segment `echo "bar`,
-        // which starts at byte 10 in the full input (`echo foo |`).
-        // With the leading-space correction (+1), the span should be at byte 16.
-        let input = b"echo foo | echo \"bar";
-        let err = parse(input).unwrap_err();
+        // The `"` opens at position 6 within ` echo "bar` (the raw segment),
+        // which starts at byte 10 in the full input. abs_start = 10, i = 6 → span = 16.
+        let raw = b"echo foo | echo \"bar";
+        let input = Input::new(raw);
+        let err = parse(&input).unwrap_err();
         if let ShellError::UnclosedQuote { span, .. } = err {
-            assert_eq!(
-                span.offset(),
-                16,
-                "quote `\"` is at byte 16 in the full input"
-            );
+            assert_eq!(span.offset(), 16, "quote `\"` is at byte 16 in the full input");
         } else {
             panic!("expected UnclosedQuote, got: {err:?}");
         }
     }
 
     // Helper: parse a single-stage command (no `|`) and extract the one stage.
-    fn parse_single(input: &[u8]) -> PipelineStage {
-        let mut pipeline = parse(input).unwrap();
+    fn parse_single(raw: &[u8]) -> PipelineStage {
+        let input = Input::new(raw);
+        let mut pipeline = parse(&input).unwrap();
         assert_eq!(pipeline.len(), 1, "expected exactly one pipeline stage");
         pipeline.remove(0)
     }
@@ -941,13 +933,13 @@ mod tests {
 
     #[test]
     fn test_pipeline_single_command_gives_one_stage() {
-        let p = parse(b"echo hello").unwrap();
+        let p = parse_raw(b"echo hello").unwrap();
         assert_eq!(p.len(), 1);
     }
 
     #[test]
     fn test_pipeline_two_commands_gives_two_stages() {
-        let p = parse(b"echo foo | cat").unwrap();
+        let p = parse_raw(b"echo foo | cat").unwrap();
         assert_eq!(p.len(), 2);
         let (cmd0, args0, _, _) = &p[0];
         let (cmd1, args1, _, _) = &p[1];
@@ -962,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_quoted_pipe_is_not_separator() {
-        let p = parse(b"echo 'foo | bar'").unwrap();
+        let p = parse_raw(b"echo 'foo | bar'").unwrap();
         assert_eq!(p.len(), 1, "quoted | must not split the pipeline");
         let (_, args, _, _) = &p[0];
         assert_eq!(
@@ -973,7 +965,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_double_quoted_pipe_is_not_separator() {
-        let p = parse(b"echo \"foo | bar\"").unwrap();
+        let p = parse_raw(b"echo \"foo | bar\"").unwrap();
         assert_eq!(p.len(), 1, "double-quoted | must not split the pipeline");
         let (_, args, _, _) = &p[0];
         assert_eq!(
@@ -984,7 +976,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_last_stage_redirect() {
-        let p = parse(b"echo foo | cat > out.txt").unwrap();
+        let p = parse_raw(b"echo foo | cat > out.txt").unwrap();
         assert_eq!(p.len(), 2);
         let (_, _, stdout_redir, _) = &p[1];
         let r = stdout_redir.as_ref().expect("last stage should have redirect");
@@ -995,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_trailing_pipe_returns_empty_segment_error() {
-        let err = parse(b"echo hello |").unwrap_err();
+        let err = parse_raw(b"echo hello |").unwrap_err();
         assert!(
             matches!(err, ShellError::EmptyPipelineSegment { .. }),
             "got: {err:?}"
@@ -1005,8 +997,8 @@ mod tests {
     #[test]
     fn test_trailing_pipe_span_points_at_pipe() {
         // "echo hello |" — `|` is at byte 11
-        let err = parse(b"echo hello |").unwrap_err();
-        if let ShellError::EmptyPipelineSegment { span } = err {
+        let err = parse_raw(b"echo hello |").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span, .. } = err {
             assert_eq!(span.offset(), 11, "`|` is at byte 11 in 'echo hello |'");
             assert_eq!(span.len(), 1);
         } else {
@@ -1016,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_leading_pipe_returns_empty_segment_error() {
-        let err = parse(b"| cat").unwrap_err();
+        let err = parse_raw(b"| cat").unwrap_err();
         assert!(
             matches!(err, ShellError::EmptyPipelineSegment { .. }),
             "got: {err:?}"
@@ -1026,8 +1018,8 @@ mod tests {
     #[test]
     fn test_leading_pipe_span_points_at_pipe() {
         // "| cat" — `|` is at byte 0
-        let err = parse(b"| cat").unwrap_err();
-        if let ShellError::EmptyPipelineSegment { span } = err {
+        let err = parse_raw(b"| cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span, .. } = err {
             assert_eq!(span.offset(), 0, "`|` is at byte 0 in '| cat'");
             assert_eq!(span.len(), 1);
         } else {
@@ -1037,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_empty_middle_segment_returns_error() {
-        let err = parse(b"echo a | | cat").unwrap_err();
+        let err = parse_raw(b"echo a | | cat").unwrap_err();
         assert!(
             matches!(err, ShellError::EmptyPipelineSegment { .. }),
             "got: {err:?}"
@@ -1047,8 +1039,8 @@ mod tests {
     #[test]
     fn test_empty_middle_segment_span_points_at_second_pipe() {
         // "echo a | | cat" — second `|` is at byte 9
-        let err = parse(b"echo a | | cat").unwrap_err();
-        if let ShellError::EmptyPipelineSegment { span } = err {
+        let err = parse_raw(b"echo a | | cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span, .. } = err {
             assert_eq!(span.offset(), 9, "second `|` is at byte 9 in 'echo a | | cat'");
             assert_eq!(span.len(), 1);
         } else {
@@ -1058,7 +1050,7 @@ mod tests {
 
     #[test]
     fn test_whitespace_only_segment_returns_error() {
-        let err = parse(b"echo a |   | cat").unwrap_err();
+        let err = parse_raw(b"echo a |   | cat").unwrap_err();
         assert!(
             matches!(err, ShellError::EmptyPipelineSegment { .. }),
             "got: {err:?}"
@@ -1068,8 +1060,8 @@ mod tests {
     #[test]
     fn test_whitespace_only_segment_span_points_at_second_pipe() {
         // "echo a |   | cat" — second `|` is at byte 11
-        let err = parse(b"echo a |   | cat").unwrap_err();
-        if let ShellError::EmptyPipelineSegment { span } = err {
+        let err = parse_raw(b"echo a |   | cat").unwrap_err();
+        if let ShellError::EmptyPipelineSegment { span, .. } = err {
             assert_eq!(span.offset(), 11, "second `|` is at byte 11 in 'echo a |   | cat'");
         } else {
             panic!("expected EmptyPipelineSegment");
@@ -1078,13 +1070,13 @@ mod tests {
 
     #[test]
     fn test_empty_pipeline_segment_is_non_fatal() {
-        let err = parse(b"echo hello |").unwrap_err();
+        let err = parse_raw(b"echo hello |").unwrap_err();
         assert!(!err.is_fatal());
     }
 
     #[test]
     fn test_empty_pipeline_segment_display() {
-        let err = parse(b"| cat").unwrap_err();
+        let err = parse_raw(b"| cat").unwrap_err();
         assert!(err.to_string().contains("|"), "expected `|` in error message, got: {err}");
     }
 }

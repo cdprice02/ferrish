@@ -7,6 +7,7 @@ use crate::{
     ctx::{ShellConfig, ShellCtx},
     executor,
     exit::ExitCode,
+    input::Input,
     parser,
 };
 
@@ -37,26 +38,25 @@ impl Shell {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
         loop {
-            out.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
+            out.write_all(self.ctx.config.prompt.as_bytes())
+                .into_diagnostic()?;
             out.flush().into_diagnostic()?;
 
-            let mut buffer = Vec::<u8>::new();
-            let bytes = reader.read_until(b'\n', &mut buffer).into_diagnostic()?;
+            let mut raw = Vec::<u8>::new();
+            let bytes = reader.read_until(b'\n', &mut raw).into_diagnostic()?;
             if bytes == 0 {
                 return Ok(ExitCode::SUCCESS);
             }
 
-            let buffer = buffer.trim_ascii();
-            if buffer.is_empty() {
+            let input = Input::from_vec(raw);
+            if input.is_effectively_empty() {
                 continue;
             }
 
-            let make_src = || String::from_utf8_lossy(buffer).into_owned();
-            let pipeline = match parser::parse(buffer) {
+            let pipeline = match parser::parse(&input) {
                 Ok(r) => r,
                 Err(e) => {
-                    let report = miette::Report::new(e).with_source_code(make_src());
-                    writeln!(err, "{report:?}").into_diagnostic()?;
+                    writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
                     continue;
                 }
             };
@@ -65,7 +65,7 @@ impl Shell {
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let report = miette::Report::new(e).with_source_code(make_src());
+                    let report = miette::Report::new(e).with_source_code(input.as_source());
                     writeln!(err, "{report:?}").into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);
@@ -135,15 +135,24 @@ mod tests {
 
     #[test]
     fn with_config_sets_prompt() {
-        let config = ShellConfig { prompt: "CFG> ".to_string(), ..Default::default() };
+        let config = ShellConfig {
+            prompt: "CFG> ".to_string(),
+            ..Default::default()
+        };
         let shell = Shell::builder().with_config(config).build();
         assert_eq!(shell.ctx.config.prompt, "CFG> ");
     }
 
     #[test]
     fn with_prompt_overrides_with_config_prompt() {
-        let config = ShellConfig { prompt: "CONFIG> ".to_string(), ..Default::default() };
-        let shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
+        let config = ShellConfig {
+            prompt: "CONFIG> ".to_string(),
+            ..Default::default()
+        };
+        let shell = Shell::builder()
+            .with_config(config)
+            .with_prompt("OVERRIDE> ".to_string())
+            .build();
         assert_eq!(shell.ctx.config.prompt, "OVERRIDE> ");
     }
 }

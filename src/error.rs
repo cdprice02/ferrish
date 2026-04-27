@@ -2,6 +2,7 @@ use std::process::ExitStatus;
 
 use crate::arg::{Arg, QuoteStyle};
 use crate::command::Command;
+use crate::input::InputSource;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
@@ -96,9 +97,12 @@ pub enum ShellError {
     UnclosedQuote {
         /// The kind of quote that was opened but never closed.
         style: QuoteStyle,
-        /// Byte offset of the opening quote character in the trimmed input line passed to the parser.
+        /// Absolute byte offset of the opening quote character in the raw input line.
         #[label("quote opened here")]
         span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 
     /// A pipeline segment (between `|` operators) is empty.
@@ -108,9 +112,12 @@ pub enum ShellError {
         help("each `|` must be preceded and followed by a command")
     )]
     EmptyPipelineSegment {
-        /// Byte offset of the `|` operator that produced an empty segment.
+        /// Absolute byte offset of the `|` operator that produced an empty segment.
         #[label("unexpected token")]
         span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 }
 
@@ -137,18 +144,12 @@ impl PartialEq for ShellError {
                 Self::InCommand { command: rc, source: rs },
             ) => lc == rc && ls == rs,
             (
-                Self::UnclosedQuote {
-                    style: l_style,
-                    span: l_span,
-                },
-                Self::UnclosedQuote {
-                    style: r_style,
-                    span: r_span,
-                },
+                Self::UnclosedQuote { style: l_style, span: l_span, .. },
+                Self::UnclosedQuote { style: r_style, span: r_span, .. },
             ) => l_style == r_style && l_span == r_span,
             (
-                Self::EmptyPipelineSegment { span: l_span },
-                Self::EmptyPipelineSegment { span: r_span },
+                Self::EmptyPipelineSegment { span: l_span, .. },
+                Self::EmptyPipelineSegment { span: r_span, .. },
             ) => l_span == r_span,
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
@@ -181,6 +182,11 @@ impl ShellError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Input;
+
+    fn dummy_src() -> InputSource {
+        Input::new(b"").as_source()
+    }
 
     #[test]
     fn test_display_command_not_found() {
@@ -239,6 +245,7 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((0, 1)),
+            src: dummy_src(),
         };
         assert_eq!(err.to_string(), "unclosed Single quote");
     }
@@ -248,6 +255,7 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteStyle::Double,
             span: SourceSpan::from((5, 1)),
+            src: dummy_src(),
         };
         assert_eq!(err.to_string(), "unclosed Double quote");
     }
@@ -303,6 +311,7 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteStyle::Double,
             span: SourceSpan::from((0, 1)),
+            src: dummy_src(),
         };
         assert!(!err.is_fatal());
     }
@@ -362,10 +371,12 @@ mod tests {
         let e1 = ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((3, 1)),
+            src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((3, 1)),
+            src: dummy_src(),
         };
         assert_eq!(e1, e2);
     }
@@ -375,10 +386,12 @@ mod tests {
         let e1 = ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((3, 1)),
+            src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
             style: QuoteStyle::Double,
             span: SourceSpan::from((3, 1)),
+            src: dummy_src(),
         };
         assert_ne!(e1, e2);
     }
