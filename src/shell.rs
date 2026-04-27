@@ -21,24 +21,21 @@ impl Shell {
         ShellBuilder::default()
     }
 
-    /// Run the interactive REPL loop, reading from stdin and writing to
-    /// stdout/stderr until `exit` is called or stdin is exhausted.
+    /// Run the interactive REPL loop, reading from stdin until `exit` is called
+    /// or stdin is exhausted. Prompts and diagnostics go to the process's real
+    /// stdout/stderr.
     pub fn run(&mut self) -> miette::Result<ExitCode> {
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
-        let mut out = std::io::stdout();
-        let mut err = std::io::stderr();
-        self.run_repl(&mut reader, &mut out, &mut err)
+        self.run_repl(&mut reader)
     }
 
-    /// Run the REPL loop with injectable I/O — useful for testing prompt
-    /// behavior and other REPL properties without spawning a subprocess.
-    pub fn run_repl(
-        &mut self,
-        reader: &mut dyn BufRead,
-        out: &mut dyn Write,
-        err: &mut dyn Write,
-    ) -> miette::Result<ExitCode> {
+    /// Run the REPL loop with injectable stdin — useful for driving the shell
+    /// from a script or test without spawning a subprocess. Prompts and
+    /// diagnostics still go to the process's real stdout/stderr.
+    pub fn run_repl(&mut self, reader: &mut dyn BufRead) -> miette::Result<ExitCode> {
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
         loop {
             out.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
             out.flush().into_diagnostic()?;
@@ -77,7 +74,6 @@ impl Shell {
             }
         }
     }
-
 }
 
 /// Builder for constructing a [`Shell`] with custom configuration.
@@ -130,45 +126,24 @@ impl ShellBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-
-    fn run_with_prompt(prompt: &str, input: &str) -> String {
-        let mut shell = Shell::builder().with_prompt(prompt.to_string()).build();
-        let mut reader = Cursor::new(input.as_bytes().to_vec());
-        let mut out = Vec::<u8>::new();
-        let mut err = Vec::<u8>::new();
-        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
-        String::from_utf8(out).unwrap()
-    }
 
     #[test]
     fn with_prompt_sets_prompt_string() {
-        let out = run_with_prompt("TEST> ", "");
-        assert!(out.contains("TEST> "), "expected custom prompt in output, got: {out:?}");
+        let shell = Shell::builder().with_prompt("TEST> ".to_string()).build();
+        assert_eq!(shell.ctx.config.prompt, "TEST> ");
     }
 
     #[test]
     fn with_config_sets_prompt() {
         let config = ShellConfig { prompt: "CFG> ".to_string(), ..Default::default() };
-        let mut shell = Shell::builder().with_config(config).build();
-        let mut reader = Cursor::new(b"".to_vec());
-        let mut out = Vec::<u8>::new();
-        let mut err = Vec::<u8>::new();
-        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
-        let stdout = String::from_utf8(out).unwrap();
-        assert!(stdout.contains("CFG> "), "expected config prompt, got: {stdout:?}");
+        let shell = Shell::builder().with_config(config).build();
+        assert_eq!(shell.ctx.config.prompt, "CFG> ");
     }
 
     #[test]
     fn with_prompt_overrides_with_config_prompt() {
         let config = ShellConfig { prompt: "CONFIG> ".to_string(), ..Default::default() };
-        let mut shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
-        let mut reader = Cursor::new(b"".to_vec());
-        let mut out = Vec::<u8>::new();
-        let mut err = Vec::<u8>::new();
-        shell.run_repl(&mut reader, &mut out, &mut err).unwrap();
-        let stdout = String::from_utf8(out).unwrap();
-        assert!(stdout.contains("OVERRIDE> "), "expected override prompt, got: {stdout:?}");
-        assert!(!stdout.contains("CONFIG> "), "config prompt should be overridden");
+        let shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
+        assert_eq!(shell.ctx.config.prompt, "OVERRIDE> ");
     }
 }

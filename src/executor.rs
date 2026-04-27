@@ -296,7 +296,7 @@ pub fn execute_pipeline(
                 for handle in handles {
                     match handle {
                         StageHandle::Thread(h, _) => { let _ = h.join(); }
-                        StageHandle::Process(mut child, _) => { let _ = child.wait(); }
+                        StageHandle::Process(mut child, _) => { let _ = child.kill(); let _ = child.wait(); }
                     }
                 }
                 return Err(launch_err);
