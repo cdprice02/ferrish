@@ -59,13 +59,12 @@ impl Shell {
                     continue;
                 }
             };
-            let raw_src = input.raw_str().to_owned();
             match executor::execute_pipeline(pipeline, &mut self.ctx) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let report = miette::Report::new(e).with_source_code(raw_src);
+                    let report = miette::Report::new(e).with_source_code(input.as_source());
                     writeln!(err, "{report:?}").into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);

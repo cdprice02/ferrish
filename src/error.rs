@@ -2,7 +2,8 @@ use std::process::ExitStatus;
 
 use crate::arg::{Arg, QuoteStyle};
 use crate::command::Command;
-use miette::{Diagnostic, NamedSource, SourceSpan};
+use crate::input::InputSource;
+use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
 /// Convenience result type for shell execution results
@@ -101,7 +102,7 @@ pub enum ShellError {
         span: SourceSpan,
         /// The raw input line this error was produced from.
         #[source_code]
-        src: NamedSource<String>,
+        src: InputSource,
     },
 
     /// A pipeline segment (between `|` operators) is empty.
@@ -116,7 +117,7 @@ pub enum ShellError {
         span: SourceSpan,
         /// The raw input line this error was produced from.
         #[source_code]
-        src: NamedSource<String>,
+        src: InputSource,
     },
 }
 
@@ -181,9 +182,10 @@ impl ShellError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Input;
 
-    fn dummy_src() -> NamedSource<String> {
-        NamedSource::new("<test>", String::new())
+    fn dummy_src() -> InputSource {
+        Input::new(b"").as_source()
     }
 
     #[test]

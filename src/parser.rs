@@ -55,7 +55,7 @@ pub fn parse(input: &Input) -> Result<Pipeline, ShellError> {
             };
             return Err(ShellError::EmptyPipelineSegment {
                 span: SourceSpan::from((input.leading_offset() + pipe_offset, 1)),
-                src: input.named_source(),
+                src: input.as_source(),
             });
         }
     }
@@ -203,7 +203,7 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     (out_args, stdout_redirect, stderr_redirect)
 }
 
-/// Split the trimmed input buffer into a command token and zero or more argument tokens.
+/// Split a pipeline segment into a command token and zero or more argument tokens.
 ///
 /// Handles single-quoted strings: characters inside `'...'` are treated literally —
 /// whitespace is preserved (not used as a delimiter) and backslashes have no special
@@ -312,14 +312,14 @@ fn split_command_and_args(
         return Err(ShellError::UnclosedQuote {
             style: QuoteStyle::Single,
             span: SourceSpan::from((quote_open_pos, 1)),
-            src: input.named_source(),
+            src: input.as_source(),
         });
     }
     if in_double_quote {
         return Err(ShellError::UnclosedQuote {
             style: QuoteStyle::Double,
             span: SourceSpan::from((quote_open_pos, 1)),
-            src: input.named_source(),
+            src: input.as_source(),
         });
     }
 

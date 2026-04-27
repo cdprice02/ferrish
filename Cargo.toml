@@ -7,6 +7,7 @@ edition = "2024"
 rust-version = "1.92"
 
 [dependencies]
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 is_executable = "1.0"
 miette = { version = "7", features = ["fancy"] }

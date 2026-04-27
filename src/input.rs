@@ -1,15 +1,53 @@
-use miette::NamedSource;
+use bytes::Bytes;
+use miette::{MietteError, MietteSpanContents, SourceCode, SourceSpan, SpanContents};
 
-/// A raw input line as received from the user, with the trimmed view and
-/// leading-whitespace offset pre-computed.
+/// A named, byte-accurate miette source backed by a [`Bytes`] buffer.
+///
+/// Implements [`SourceCode`] so it can be used directly as the `#[source_code]`
+/// field in diagnostic variants. Cloning is cheap — the underlying [`Bytes`]
+/// is reference-counted.
+#[derive(Clone, Debug)]
+pub struct InputSource {
+    name: &'static str,
+    bytes: Bytes,
+}
+
+impl InputSource {
+    fn new(name: &'static str, bytes: Bytes) -> Self {
+        Self { name, bytes }
+    }
+}
+
+impl SourceCode for InputSource {
+    fn read_span<'a>(
+        &'a self,
+        span: &SourceSpan,
+        context_lines_before: usize,
+        context_lines_after: usize,
+    ) -> Result<Box<dyn SpanContents<'a> + 'a>, MietteError> {
+        let bytes: &'a [u8] = &self.bytes;
+        let inner = bytes.read_span(span, context_lines_before, context_lines_after)?;
+        Ok(Box::new(MietteSpanContents::new_named(
+            self.name.to_string(),
+            inner.data(),
+            *inner.span(),
+            inner.line(),
+            inner.column(),
+            inner.line_count(),
+        )))
+    }
+}
+
+/// A raw input line as received from the user, with byte-accurate storage and
+/// pre-computed trimming metadata.
 ///
 /// The parser operates on [`Input::trimmed_bytes`] but constructs all
-/// diagnostic spans as absolute offsets into [`Input::raw_str`], so errors
+/// diagnostic spans as absolute offsets into the raw byte sequence, so errors
 /// are self-contained and render correctly without any adjustment at the
 /// call site.
 pub struct Input {
-    raw: String,
-    /// Byte offset of the first non-whitespace character in `raw`.
+    raw: Bytes,
+    /// Byte offset of the first non-whitespace byte in `raw`.
     leading_offset: usize,
     /// Byte length of the trimmed content (trailing whitespace excluded).
     trimmed_len: usize,
@@ -18,19 +56,18 @@ pub struct Input {
 impl Input {
     /// Construct an [`Input`] from raw bytes as received from the user.
     pub fn new(bytes: &[u8]) -> Self {
-        let raw = String::from_utf8_lossy(bytes).into_owned();
-        let raw_bytes = raw.as_bytes();
-        let leading_offset = raw_bytes.len() - raw_bytes.trim_ascii_start().len();
-        let trimmed_len = raw_bytes.trim_ascii().len();
+        let raw = Bytes::copy_from_slice(bytes);
+        let leading_offset = raw.len() - raw.trim_ascii_start().len();
+        let trimmed_len = raw.trim_ascii().len();
         Self { raw, leading_offset, trimmed_len }
     }
 
     /// The slice the parser operates on — leading and trailing whitespace removed.
     pub fn trimmed_bytes(&self) -> &[u8] {
-        &self.raw.as_bytes()[self.leading_offset..self.leading_offset + self.trimmed_len]
+        &self.raw[self.leading_offset..self.leading_offset + self.trimmed_len]
     }
 
-    /// Byte offset of the trimmed content within the raw string.
+    /// Byte offset of the trimmed content within the raw byte sequence.
     pub fn leading_offset(&self) -> usize {
         self.leading_offset
     }
@@ -40,15 +77,15 @@ impl Input {
         self.trimmed_len == 0
     }
 
-    /// The original input string as received, including all whitespace.
-    pub fn raw_str(&self) -> &str {
+    /// The original bytes as received, including all whitespace.
+    pub fn raw_bytes(&self) -> &[u8] {
         &self.raw
     }
 
-    /// A named miette source wrapping the raw input line, suitable for
-    /// embedding directly in diagnostic variants via `#[source_code]`.
-    pub fn named_source(&self) -> NamedSource<String> {
-        NamedSource::new("<input>", self.raw.clone())
+    /// A named miette source suitable for embedding in diagnostic variants via
+    /// `#[source_code]`. Cloning is cheap — the underlying buffer is reference-counted.
+    pub fn as_source(&self) -> InputSource {
+        InputSource::new("<input>", self.raw.clone())
     }
 }
 
@@ -86,8 +123,16 @@ mod tests {
     }
 
     #[test]
-    fn raw_str_preserves_original() {
+    fn raw_bytes_preserves_original() {
         let input = Input::new(b"  echo hello\n");
-        assert_eq!(input.raw_str(), "  echo hello\n");
+        assert_eq!(input.raw_bytes(), b"  echo hello\n");
+    }
+
+    #[test]
+    fn non_utf8_bytes_stored_accurately() {
+        let bytes = b"echo \xff\xfe";
+        let input = Input::new(bytes);
+        assert_eq!(input.raw_bytes(), bytes);
+        assert_eq!(input.trimmed_bytes(), bytes); // no leading/trailing whitespace
     }
 }
