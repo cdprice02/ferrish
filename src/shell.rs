@@ -7,6 +7,7 @@ use crate::{
     ctx::{ShellConfig, ShellCtx},
     executor,
     exit::ExitCode,
+    input::Input,
     parser,
 };
 
@@ -40,32 +41,31 @@ impl Shell {
             out.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
             out.flush().into_diagnostic()?;
 
-            let mut buffer = Vec::<u8>::new();
-            let bytes = reader.read_until(b'\n', &mut buffer).into_diagnostic()?;
+            let mut raw = Vec::<u8>::new();
+            let bytes = reader.read_until(b'\n', &mut raw).into_diagnostic()?;
             if bytes == 0 {
                 return Ok(ExitCode::SUCCESS);
             }
 
-            let buffer = buffer.trim_ascii();
-            if buffer.is_empty() {
+            let input = Input::new(&raw);
+            if input.is_effectively_empty() {
                 continue;
             }
 
-            let make_src = || String::from_utf8_lossy(buffer).into_owned();
-            let pipeline = match parser::parse(buffer) {
+            let pipeline = match parser::parse(&input) {
                 Ok(r) => r,
                 Err(e) => {
-                    let report = miette::Report::new(e).with_source_code(make_src());
-                    writeln!(err, "{report:?}").into_diagnostic()?;
+                    writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
                     continue;
                 }
             };
+            let raw_src = input.raw_str().to_owned();
             match executor::execute_pipeline(pipeline, &mut self.ctx) {
                 Ok(Some(exit_code)) => return Ok(exit_code),
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let report = miette::Report::new(e).with_source_code(make_src());
+                    let report = miette::Report::new(e).with_source_code(raw_src);
                     writeln!(err, "{report:?}").into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);
