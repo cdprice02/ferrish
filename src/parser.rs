@@ -40,6 +40,11 @@ pub type Pipeline = Vec<PipelineStage>;
 /// appears inside quotes is treated as a literal argument character.
 pub fn parse(buffer: &[u8]) -> Result<Pipeline, ShellError> {
     let segments = split_pipeline_segments(buffer);
+    for segment in &segments {
+        if segment.trim_ascii().is_empty() {
+            return Err(ShellError::EmptyPipelineSegment);
+        }
+    }
     let mut pipeline = Vec::with_capacity(segments.len());
     for segment in segments {
         // Compute the segment's byte offset within the original buffer via
@@ -973,5 +978,43 @@ mod tests {
         let (_, _, stdout_redir, _) = &p[1];
         let r = stdout_redir.as_ref().expect("last stage should have redirect");
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
+    }
+
+    // --- EmptyPipelineSegment tests ---
+
+    #[test]
+    fn test_trailing_pipe_returns_empty_segment_error() {
+        let err = parse(b"echo hello |").unwrap_err();
+        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_leading_pipe_returns_empty_segment_error() {
+        let err = parse(b"| cat").unwrap_err();
+        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_empty_middle_segment_returns_error() {
+        let err = parse(b"echo a | | cat").unwrap_err();
+        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_whitespace_only_segment_returns_error() {
+        let err = parse(b"echo a |   | cat").unwrap_err();
+        assert!(matches!(err, ShellError::EmptyPipelineSegment), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_empty_pipeline_segment_is_non_fatal() {
+        let err = parse(b"echo hello |").unwrap_err();
+        assert!(!err.is_fatal());
+    }
+
+    #[test]
+    fn test_empty_pipeline_segment_display() {
+        let err = parse(b"| cat").unwrap_err();
+        assert!(err.to_string().contains("|"), "expected `|` in error message, got: {err}");
     }
 }

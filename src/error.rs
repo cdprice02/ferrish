@@ -100,6 +100,14 @@ pub enum ShellError {
         #[label("quote opened here")]
         span: SourceSpan,
     },
+
+    /// A pipeline segment (between `|` operators) is empty.
+    #[error("syntax error near unexpected token `|'")]
+    #[diagnostic(
+        code(ferrish::parse::empty_pipeline_segment),
+        help("each `|` must be preceded and followed by a command")
+    )]
+    EmptyPipelineSegment,
 }
 
 impl std::borrow::Borrow<dyn miette::Diagnostic> for Box<ShellError> {
