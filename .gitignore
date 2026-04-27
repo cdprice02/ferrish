@@ -16,5 +16,3 @@ target/
 # OS
 tmp/
 
-# Claude Code worktrees
-.claude/worktrees/

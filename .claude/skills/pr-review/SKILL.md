@@ -10,7 +10,7 @@ Addresses review comments on a single ferrish PR end-to-end. Mechanical fixes ge
 ## Repo constants
 
 - Owner: `cdprice02`, Repo: `ferrish`, Base branch: `main`
-- Worktrees: `.claude/worktrees/` (gitignored)
+- Worktrees: `../ferrish-worktrees/` (sibling directory, outside the repo)
 
 ## Tool priority
 
@@ -70,7 +70,7 @@ Handle all design questions this way before proceeding to mechanical fixes in St
 Check out the PR branch in an isolated worktree:
 
 ```bash
-git worktree add .claude/worktrees/pr-<N>-review -b pr-<N>-review --track origin/<branch-name>
+git worktree add ../ferrish-worktrees/pr-<N>-review -b pr-<N>-review --track origin/<branch-name>
 ```
 
 All edits and verification commands run inside that worktree.

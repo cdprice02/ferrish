@@ -37,7 +37,7 @@ For all unblocked issues, spawn one subagent per issue using the `implement` ski
 Brief each subagent with:
 ```
 Use the implement skill to implement ferrish issue #<N>.
-Work in .claude/worktrees/issue-<N>.
+Work in ../ferrish-worktrees/issue-<N>.
 Deliver a PR URL. Do not return a plan.
 ```
 

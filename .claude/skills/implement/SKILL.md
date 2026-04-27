@@ -10,7 +10,7 @@ End-to-end implementation of a single ferrish issue. The deliverable is a PR URL
 ## Repo constants
 
 - Owner: `cdprice02`, Repo: `ferrish`, Base branch: `main`
-- Worktrees: `.claude/worktrees/` (gitignored)
+- Worktrees: `../ferrish-worktrees/` (sibling directory, outside the repo)
 
 ## Tool priority
 
@@ -33,7 +33,7 @@ If the issue is genuinely ambiguous after reading it, ask one focused question b
 ### 3. Create the worktree
 
 ```bash
-git worktree add .claude/worktrees/issue-<N> -b <branch-name> origin/main
+git worktree add ../ferrish-worktrees/issue-<N> -b <branch-name> origin/main
 ```
 
 All subsequent edits and commands happen inside that worktree directory.
