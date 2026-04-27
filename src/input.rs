@@ -54,12 +54,32 @@ pub struct Input {
 }
 
 impl Input {
-    /// Construct an [`Input`] from raw bytes as received from the user.
-    pub fn new(bytes: &[u8]) -> Self {
-        let raw = Bytes::copy_from_slice(bytes);
+    fn from_raw(raw: Bytes) -> Self {
         let leading_offset = raw.len() - raw.trim_ascii_start().len();
         let trimmed_len = raw.trim_ascii().len();
-        Self { raw, leading_offset, trimmed_len }
+        Self {
+            raw,
+            leading_offset,
+            trimmed_len,
+        }
+    }
+
+    /// Construct an [`Input`] from borrowed raw bytes, copying into owned storage.
+    ///
+    /// Prefer [`Input::from_vec`] or [`Input::from_bytes`] when the caller already
+    /// owns the buffer to avoid the extra copy.
+    pub fn new(bytes: &[u8]) -> Self {
+        Self::from_raw(Bytes::copy_from_slice(bytes))
+    }
+
+    /// Construct an [`Input`] from an owned [`Vec<u8>`] without an extra copy.
+    pub fn from_vec(bytes: Vec<u8>) -> Self {
+        Self::from_raw(Bytes::from(bytes))
+    }
+
+    /// Construct an [`Input`] from an owned [`Bytes`] buffer without an extra copy.
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        Self::from_raw(bytes)
     }
 
     /// The slice the parser operates on — leading and trailing whitespace removed.

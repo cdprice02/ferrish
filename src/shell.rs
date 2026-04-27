@@ -38,7 +38,8 @@ impl Shell {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
         loop {
-            out.write_all(self.ctx.config.prompt.as_bytes()).into_diagnostic()?;
+            out.write_all(self.ctx.config.prompt.as_bytes())
+                .into_diagnostic()?;
             out.flush().into_diagnostic()?;
 
             let mut raw = Vec::<u8>::new();
@@ -47,7 +48,7 @@ impl Shell {
                 return Ok(ExitCode::SUCCESS);
             }
 
-            let input = Input::new(&raw);
+            let input = Input::from_vec(raw);
             if input.is_effectively_empty() {
                 continue;
             }
@@ -134,15 +135,24 @@ mod tests {
 
     #[test]
     fn with_config_sets_prompt() {
-        let config = ShellConfig { prompt: "CFG> ".to_string(), ..Default::default() };
+        let config = ShellConfig {
+            prompt: "CFG> ".to_string(),
+            ..Default::default()
+        };
         let shell = Shell::builder().with_config(config).build();
         assert_eq!(shell.ctx.config.prompt, "CFG> ");
     }
 
     #[test]
     fn with_prompt_overrides_with_config_prompt() {
-        let config = ShellConfig { prompt: "CONFIG> ".to_string(), ..Default::default() };
-        let shell = Shell::builder().with_config(config).with_prompt("OVERRIDE> ".to_string()).build();
+        let config = ShellConfig {
+            prompt: "CONFIG> ".to_string(),
+            ..Default::default()
+        };
+        let shell = Shell::builder()
+            .with_config(config)
+            .with_prompt("OVERRIDE> ".to_string())
+            .build();
         assert_eq!(shell.ctx.config.prompt, "OVERRIDE> ");
     }
 }
