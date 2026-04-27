@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::env;
 
 /// Configurable shell settings.
+#[derive(Clone)]
 pub struct ShellConfig {
     /// The prompt string displayed before each input line.
     pub prompt: String,
@@ -23,6 +24,7 @@ impl Default for ShellConfig {
 }
 
 /// Runtime context shared across all shell operations.
+#[derive(Clone)]
 pub struct ShellCtx {
     /// The user's home directory, if known.
     pub home_dir: Option<PathBuf>,
