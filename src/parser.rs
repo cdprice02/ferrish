@@ -6,15 +6,20 @@ use miette::SourceSpan;
 use crate::arg::{Arg, Args, QuoteStyle};
 use crate::command::builtin::BuiltInCommand;
 use crate::command::executable::ExecutableCommand;
-use crate::command::{Command, builtin};
+use crate::command::{builtin, Command};
 use crate::env::get_path_files;
 use crate::error::ShellError;
-use crate::input::Input;
+use crate::input::{Input, InputSource};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
 /// One stage of a pipeline: the command to run, its arguments, and any
 /// per-stage redirections.
-pub type PipelineStage = (Command, Args, Option<StdoutRedirection>, Option<StderrRedirection>);
+pub type PipelineStage = (
+    Command,
+    Args,
+    Option<StdoutRedirection>,
+    Option<StderrRedirection>,
+);
 
 /// A parsed pipeline — one [`PipelineStage`] per `|`-separated segment.
 ///
@@ -62,7 +67,8 @@ pub fn parse(input: &Input) -> Result<Pipeline, ShellError> {
     let mut pipeline = Vec::with_capacity(segments.len());
     for segment in segments {
         // Absolute byte offset of this segment's first byte within the raw input.
-        let abs_start = input.leading_offset() + (segment.as_ptr() as usize - buffer.as_ptr() as usize);
+        let abs_start =
+            input.leading_offset() + (segment.as_ptr() as usize - buffer.as_ptr() as usize);
         pipeline.push(parse_segment(segment, abs_start, input)?);
     }
     Ok(pipeline)
@@ -73,17 +79,31 @@ pub fn parse(input: &Input) -> Result<Pipeline, ShellError> {
 ///
 /// `abs_start` is the byte offset of `buffer[0]` within the raw input line,
 /// used to anchor all diagnostic spans to the original string.
-fn parse_segment(buffer: &[u8], abs_start: usize, input: &Input) -> Result<PipelineStage, ShellError> {
-    let (command, raw_args) = split_command_and_args(buffer, abs_start, input)?;
-    let command = parse_command(&command);
+fn parse_segment(
+    buffer: &[u8],
+    abs_start: usize,
+    input: &Input,
+) -> Result<PipelineStage, ShellError> {
+    let (command_bytes, command_span, raw_args) = split_command_and_args(buffer, abs_start, input)?;
+    let src = input.as_source();
+    let command = parse_command(&command_bytes, command_span, src.clone());
 
     let (args, stdout_redirect, stderr_redirect) = extract_redirects(raw_args);
 
     let args = args
         .into_iter()
-        .map(|(bytes, style)| match style {
-            QuoteStyle::None => Arg::Literal(bytes),
-            style => Arg::Quoted { bytes, style },
+        .map(|(bytes, style, span)| match style {
+            QuoteStyle::None => Arg::Literal {
+                bytes,
+                span,
+                src: src.clone(),
+            },
+            style => Arg::Quoted {
+                bytes,
+                style,
+                span,
+                src: src.clone(),
+            },
         })
         .collect();
     Ok((command, args, stdout_redirect, stderr_redirect))
@@ -130,12 +150,16 @@ fn split_pipeline_segments(buffer: &[u8]) -> Vec<&[u8]> {
     segments
 }
 
-/// Raw argument token: byte content and its quoting style.
-type RawArg = (Vec<u8>, QuoteStyle);
+/// Raw argument token: byte content, quoting style, and absolute source span.
+type RawArg = (Vec<u8>, QuoteStyle, SourceSpan);
 
 /// Result of redirect extraction: remaining args, optional stdout [`StdoutRedirection`],
 /// and optional stderr [`StderrRedirection`].
-type ExtractResult = (Vec<RawArg>, Option<StdoutRedirection>, Option<StderrRedirection>);
+type ExtractResult = (
+    Vec<RawArg>,
+    Option<StdoutRedirection>,
+    Option<StderrRedirection>,
+);
 
 /// Scan `raw_args` for unquoted redirect operators
 /// (`>`, `1>`, `>>`, `1>>`, `2>`, `2>>`).
@@ -160,7 +184,7 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
     let mut stderr_redirect: Option<StderrRedirection> = None;
 
     let mut iter = raw_args.into_iter().peekable();
-    while let Some((bytes, style)) = iter.next() {
+    while let Some((bytes, style, span)) = iter.next() {
         // Only treat unquoted tokens as potential redirect operators.
         if style == QuoteStyle::None {
             let token = &bytes[..];
@@ -180,10 +204,9 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
             };
 
             if let Some((is_stdout, mode)) = op {
-                if let Some((target_bytes, _)) = iter.next() {
-                    let target = std::path::PathBuf::from(
-                        String::from_utf8_lossy(&target_bytes).as_ref(),
-                    );
+                if let Some((target_bytes, _, _)) = iter.next() {
+                    let target =
+                        std::path::PathBuf::from(String::from_utf8_lossy(&target_bytes).as_ref());
                     if is_stdout {
                         stdout_redirect = Some(StdoutRedirection::new(mode, target));
                     } else {
@@ -192,12 +215,12 @@ fn extract_redirects(raw_args: Vec<RawArg>) -> ExtractResult {
                 } else {
                     // No filename follows the operator — keep it as a literal
                     // argument rather than silently dropping it.
-                    out_args.push((bytes, style));
+                    out_args.push((bytes, style, span));
                 }
                 continue;
             }
         }
-        out_args.push((bytes, style));
+        out_args.push((bytes, style, span));
     }
 
     (out_args, stdout_redirect, stderr_redirect)
@@ -223,19 +246,23 @@ fn split_command_and_args(
     buffer: &[u8],
     abs_start: usize,
     input: &Input,
-) -> Result<(Vec<u8>, Vec<RawArg>), ShellError> {
-    let mut parts: Vec<(Vec<u8>, QuoteStyle)> = Vec::new();
+) -> Result<(Vec<u8>, SourceSpan, Vec<RawArg>), ShellError> {
+    let mut parts: Vec<(Vec<u8>, QuoteStyle, SourceSpan)> = Vec::new();
 
     let mut current: Vec<u8> = Vec::new();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut token_started = false;
     let mut token_style: Option<QuoteStyle> = None;
+    // Absolute byte offset of the first byte of the current token (set when token_started
+    // transitions false → true).
+    let mut token_start_abs: usize = 0;
     // Absolute byte offset of the opening quote character within the raw input.
     let mut quote_open_pos: usize = 0;
 
     let mut i = 0;
     while i < buffer.len() {
+        let iter_start_i = i;
         let byte = buffer[i];
 
         if in_single_quote {
@@ -267,6 +294,9 @@ fn split_command_and_args(
                 i += 1;
                 current.push(buffer[i]);
             }
+            if !token_started {
+                token_start_abs = abs_start + iter_start_i;
+            }
             token_started = true;
             token_style = match token_style {
                 None | Some(QuoteStyle::None) => Some(QuoteStyle::None),
@@ -275,6 +305,9 @@ fn split_command_and_args(
         } else if byte == b'\'' {
             in_single_quote = true;
             quote_open_pos = abs_start + i;
+            if !token_started {
+                token_start_abs = abs_start + iter_start_i;
+            }
             token_started = true;
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Single);
@@ -284,6 +317,9 @@ fn split_command_and_args(
         } else if byte == b'"' {
             in_double_quote = true;
             quote_open_pos = abs_start + i;
+            if !token_started {
+                token_start_abs = abs_start + iter_start_i;
+            }
             token_started = true;
             if token_style.is_none() {
                 token_style = Some(QuoteStyle::Double);
@@ -293,10 +329,15 @@ fn split_command_and_args(
         } else if byte.is_ascii_whitespace() {
             if token_started || !current.is_empty() {
                 let style = token_style.take().unwrap_or(QuoteStyle::None);
-                parts.push((std::mem::take(&mut current), style));
+                let span =
+                    SourceSpan::from((token_start_abs, abs_start + iter_start_i - token_start_abs));
+                parts.push((std::mem::take(&mut current), style, span));
                 token_started = false;
             }
         } else {
+            if !token_started {
+                token_start_abs = abs_start + iter_start_i;
+            }
             current.push(byte);
             token_started = true;
             token_style = match token_style {
@@ -325,27 +366,36 @@ fn split_command_and_args(
 
     if token_started || !current.is_empty() {
         let style = token_style.unwrap_or(QuoteStyle::None);
-        parts.push((current, style));
+        let span = SourceSpan::from((token_start_abs, abs_start + buffer.len() - token_start_abs));
+        parts.push((current, style, span));
     }
 
     if parts.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), SourceSpan::from((abs_start, 0)), Vec::new()));
     }
 
     let mut iter = parts.into_iter();
-    let (command, _) = iter.next().unwrap_or((Vec::new(), QuoteStyle::None));
-    let args: Vec<(Vec<u8>, QuoteStyle)> = iter.collect();
+    let (command, _, cmd_span) = iter.next().unwrap_or((
+        Vec::new(),
+        QuoteStyle::None,
+        SourceSpan::from((abs_start, 0)),
+    ));
+    let args: Vec<RawArg> = iter.collect();
 
-    Ok((command, args))
+    Ok((command, cmd_span, args))
 }
 
 /// Resolve a raw command token to a [`Command`] variant.
-pub fn parse_command(command: &[u8]) -> Command {
-    if !command.is_ascii() {
-        return Command::Unrecognized(command.into());
+pub fn parse_command(bytes: &[u8], span: SourceSpan, src: InputSource) -> Command {
+    if !bytes.is_ascii() {
+        return Command::Unrecognized {
+            bytes: bytes.to_vec(),
+            span,
+            src,
+        };
     }
 
-    let command = std::str::from_utf8(command).expect("checked ASCII above");
+    let command = std::str::from_utf8(bytes).expect("checked ASCII above");
 
     let name = builtin::BuiltInName::from_str(command);
     if let Ok(name) = name {
@@ -359,13 +409,17 @@ pub fn parse_command(command: &[u8]) -> Command {
             }
         }
 
-        Command::Unrecognized(command.into())
+        Command::Unrecognized {
+            bytes: bytes.to_vec(),
+            span,
+            src,
+        }
     }
 }
 
 /// Parse a raw byte slice into an [`Arg`].
 pub fn parse_arg(arg: &[u8]) -> Arg {
-    Arg::Literal(arg.to_vec())
+    Arg::synthetic(arg)
 }
 
 #[cfg(test)]
@@ -379,15 +433,17 @@ mod tests {
     // Helper: split and return command + arg bytes (quoting metadata stripped).
     fn split(input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
         let src = Input::new(input);
-        let (cmd, args) = split_command_and_args(input, 0, &src).unwrap();
-        let arg_bytes = args.into_iter().map(|(b, _)| b).collect();
+        let (cmd, _, args) = split_command_and_args(input, 0, &src).unwrap();
+        let arg_bytes = args.into_iter().map(|(b, _, _)| b).collect();
         (cmd, arg_bytes)
     }
 
     // Helper: split and return command + (bytes, style) pairs.
     fn split_styled(input: &[u8]) -> (Vec<u8>, Vec<(Vec<u8>, QuoteStyle)>) {
         let src = Input::new(input);
-        split_command_and_args(input, 0, &src).unwrap()
+        let (cmd, _, args) = split_command_and_args(input, 0, &src).unwrap();
+        let styled = args.into_iter().map(|(b, s, _)| (b, s)).collect();
+        (cmd, styled)
     }
 
     #[test]
@@ -399,21 +455,23 @@ mod tests {
 
     #[test]
     fn test_parse_command_empty() {
-        let command = "".as_bytes();
-        let command = parse_command(command);
+        let command = parse_command(b"", SourceSpan::from((0, 0)), InputSource::synthetic());
         match command {
-            Command::Unrecognized(command) => assert_eq!(command.len(), 0),
+            Command::Unrecognized { bytes, .. } => assert_eq!(bytes.len(), 0),
             _ => panic!("Empty command unexpectedly found as: {}", command),
         }
     }
 
     #[test]
     fn test_parse_command_unrecognized() {
-        let command = "some_non_existent_command".as_bytes();
-        let command = parse_command(command);
+        let command = parse_command(
+            b"some_non_existent_command",
+            SourceSpan::from((0, 0)),
+            InputSource::synthetic(),
+        );
         match command {
-            Command::Unrecognized(cmd) => {
-                assert_eq!(cmd, b"some_non_existent_command");
+            Command::Unrecognized { bytes, .. } => {
+                assert_eq!(bytes, b"some_non_existent_command");
             }
             _ => panic!("Unrecognized command was recognized: {}", command),
         }
@@ -424,7 +482,7 @@ mod tests {
         let arg = "/home/user".as_bytes();
         let parsed_arg = parse_arg(arg);
         assert_eq!(parsed_arg.as_bytes(), arg);
-        assert!(matches!(parsed_arg, Arg::Literal(_)));
+        assert!(matches!(parsed_arg, Arg::Literal { .. }));
     }
 
     #[test]
@@ -456,7 +514,7 @@ mod tests {
         let arg = "".as_bytes();
         let parsed_arg = parse_arg(arg);
         assert!(parsed_arg.as_bytes().is_empty());
-        assert!(matches!(parsed_arg, Arg::Literal(_)));
+        assert!(matches!(parsed_arg, Arg::Literal { .. }));
     }
 
     #[test]
@@ -464,7 +522,7 @@ mod tests {
         let arg = "file-with_special.chars".as_bytes();
         let parsed_arg = parse_arg(arg);
         assert_eq!(parsed_arg.as_bytes(), arg);
-        assert!(matches!(parsed_arg, Arg::Literal(_)));
+        assert!(matches!(parsed_arg, Arg::Literal { .. }));
     }
 
     // --- Double-quote tests ---
@@ -675,7 +733,13 @@ mod tests {
         let result = split_command_and_args(buf, 0, &src);
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ShellError::UnclosedQuote { style: QuoteStyle::Double, .. }),
+            matches!(
+                err,
+                ShellError::UnclosedQuote {
+                    style: QuoteStyle::Double,
+                    ..
+                }
+            ),
             "expected UnclosedQuote(Double), got: {err:?}"
         );
     }
@@ -699,7 +763,13 @@ mod tests {
         let result = split_command_and_args(buf, 0, &src);
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ShellError::UnclosedQuote { style: QuoteStyle::Single, .. }),
+            matches!(
+                err,
+                ShellError::UnclosedQuote {
+                    style: QuoteStyle::Single,
+                    ..
+                }
+            ),
             "expected UnclosedQuote(Single), got: {err:?}"
         );
     }
@@ -733,7 +803,11 @@ mod tests {
         let input = Input::new(raw);
         let err = parse(&input).unwrap_err();
         if let ShellError::UnclosedQuote { span, .. } = err {
-            assert_eq!(span.offset(), 16, "quote `\"` is at byte 16 in the full input");
+            assert_eq!(
+                span.offset(),
+                16,
+                "quote `\"` is at byte 16 in the full input"
+            );
         } else {
             panic!("expected UnclosedQuote, got: {err:?}");
         }
@@ -751,8 +825,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_gt() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello > out.txt");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello > out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -765,8 +838,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_1gt() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello 1> out.txt");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello 1> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -779,8 +851,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_gtgt() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello >> out.txt");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello >> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -793,8 +864,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_1gtgt() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello 1>> out.txt");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello 1>> out.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
@@ -807,13 +877,15 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_2gt() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello 2> err.txt");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello 2> err.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello"]
         );
-        assert!(stdout_redirect.is_none(), "stdout redirect should be None for 2>");
+        assert!(
+            stdout_redirect.is_none(),
+            "stdout redirect should be None for 2>"
+        );
         let r = stderr_redirect.expect("stderr redirect should be Some for 2>");
         assert_eq!(r.mode, RedirectMode::Overwrite);
         assert_eq!(r.target, std::path::PathBuf::from("err.txt"));
@@ -835,8 +907,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_last_wins_stdout() {
-        let (_, args, stdout_redirect, _) =
-            parse_single(b"echo hi > first.txt >> last.txt");
+        let (_, args, stdout_redirect, _) = parse_single(b"echo hi > first.txt >> last.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hi"]
@@ -848,8 +919,7 @@ mod tests {
 
     #[test]
     fn test_parse_redirect_last_wins_stderr() {
-        let (_, args, _, stderr_redirect) =
-            parse_single(b"echo hi 2> first.txt 2>> last.txt");
+        let (_, args, _, stderr_redirect) = parse_single(b"echo hi 2> first.txt 2>> last.txt");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hi"]
@@ -862,7 +932,10 @@ mod tests {
     #[test]
     fn test_parse_redirect_trailing_operator_kept_as_arg() {
         let (_, args, stdout_redirect, _) = parse_single(b"echo >");
-        assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
+        assert!(
+            stdout_redirect.is_none(),
+            "no redirect target means no Redirection"
+        );
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec![">"],
@@ -873,7 +946,10 @@ mod tests {
     #[test]
     fn test_parse_redirect_trailing_gtgt_kept_as_arg() {
         let (_, args, stdout_redirect, _) = parse_single(b"echo >>");
-        assert!(stdout_redirect.is_none(), "no redirect target means no Redirection");
+        assert!(
+            stdout_redirect.is_none(),
+            "no redirect target means no Redirection"
+        );
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec![">>"],
@@ -884,7 +960,10 @@ mod tests {
     #[test]
     fn test_parse_stderr_redirect_trailing_operator_kept_as_arg() {
         let (_, args, _, stderr_redirect) = parse_single(b"echo 2>");
-        assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
+        assert!(
+            stderr_redirect.is_none(),
+            "no redirect target means no Redirection"
+        );
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["2>"],
@@ -909,7 +988,10 @@ mod tests {
     #[test]
     fn test_parse_stderr_append_redirect_trailing_operator_kept_as_arg() {
         let (_, args, _, stderr_redirect) = parse_single(b"echo 2>>");
-        assert!(stderr_redirect.is_none(), "no redirect target means no Redirection");
+        assert!(
+            stderr_redirect.is_none(),
+            "no redirect target means no Redirection"
+        );
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["2>>"],
@@ -919,8 +1001,7 @@ mod tests {
 
     #[test]
     fn test_parse_no_redirect() {
-        let (_, args, stdout_redirect, stderr_redirect) =
-            parse_single(b"echo hello world");
+        let (_, args, stdout_redirect, stderr_redirect) = parse_single(b"echo hello world");
         assert_eq!(
             args.iter().map(|a: &Arg| a.to_string()).collect::<Vec<_>>(),
             vec!["hello", "world"]
@@ -979,7 +1060,9 @@ mod tests {
         let p = parse_raw(b"echo foo | cat > out.txt").unwrap();
         assert_eq!(p.len(), 2);
         let (_, _, stdout_redir, _) = &p[1];
-        let r = stdout_redir.as_ref().expect("last stage should have redirect");
+        let r = stdout_redir
+            .as_ref()
+            .expect("last stage should have redirect");
         assert_eq!(r.target, std::path::PathBuf::from("out.txt"));
     }
 
@@ -1041,7 +1124,11 @@ mod tests {
         // "echo a | | cat" — second `|` is at byte 9
         let err = parse_raw(b"echo a | | cat").unwrap_err();
         if let ShellError::EmptyPipelineSegment { span, .. } = err {
-            assert_eq!(span.offset(), 9, "second `|` is at byte 9 in 'echo a | | cat'");
+            assert_eq!(
+                span.offset(),
+                9,
+                "second `|` is at byte 9 in 'echo a | | cat'"
+            );
             assert_eq!(span.len(), 1);
         } else {
             panic!("expected EmptyPipelineSegment");
@@ -1062,7 +1149,11 @@ mod tests {
         // "echo a |   | cat" — second `|` is at byte 11
         let err = parse_raw(b"echo a |   | cat").unwrap_err();
         if let ShellError::EmptyPipelineSegment { span, .. } = err {
-            assert_eq!(span.offset(), 11, "second `|` is at byte 11 in 'echo a |   | cat'");
+            assert_eq!(
+                span.offset(),
+                11,
+                "second `|` is at byte 11 in 'echo a |   | cat'"
+            );
         } else {
             panic!("expected EmptyPipelineSegment");
         }
@@ -1077,6 +1168,9 @@ mod tests {
     #[test]
     fn test_empty_pipeline_segment_display() {
         let err = parse_raw(b"| cat").unwrap_err();
-        assert!(err.to_string().contains("|"), "expected `|` in error message, got: {err}");
+        assert!(
+            err.to_string().contains("|"),
+            "expected `|` in error message, got: {err}"
+        );
     }
 }

@@ -51,5 +51,4 @@ mod tests {
         let cmd = ExecutableCommand::new(path.clone());
         assert_eq!(cmd.file_path(), &path);
     }
-
 }

@@ -65,8 +65,7 @@ impl Shell {
                 Ok(None) => {}
                 Err(e) => {
                     let fatal = e.is_fatal();
-                    let report = miette::Report::new(e).with_source_code(input.as_source());
-                    writeln!(err, "{report:?}").into_diagnostic()?;
+                    writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
                     if fatal {
                         return Ok(ExitCode::FAILURE);
                     }
