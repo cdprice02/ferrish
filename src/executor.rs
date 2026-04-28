@@ -424,7 +424,13 @@ fn execute_builtin(
 
 fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
     let new_dir = if let Some(target) = args.first() {
-        let path = fs::resolve_path(&target.into(), ctx.home_dir.as_deref(), &ctx.cwd)?;
+        let target_path: std::path::PathBuf = target.into();
+        // Tilde expansion requires HOME; fail here so `cd ~` and `cd` both
+        // return HomeNotSet rather than `cd ~` silently going to `/`.
+        if target_path.strip_prefix("~").is_ok() && ctx.home_dir.is_none() {
+            return Err(ShellError::HomeNotSet);
+        }
+        let path = fs::resolve_path(&target_path, ctx.home_dir.as_deref(), &ctx.cwd)?;
         if !path.exists() {
             return Err(ShellError::FileNotFound {
                 name: target.to_string(),

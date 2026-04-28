@@ -13,6 +13,7 @@ pub struct ShellHarness {
     temp_dir: tempfile::TempDir,
     setup_dirs: Vec<String>,
     setup_files: Vec<(String, String)>,
+    no_home: bool,
 }
 
 impl Default for ShellHarness {
@@ -27,7 +28,14 @@ impl ShellHarness {
             temp_dir: tempfile::tempdir().expect("create temp dir"),
             setup_dirs: Vec::new(),
             setup_files: Vec::new(),
+            no_home: false,
         }
+    }
+
+    /// Run without HOME set (and without USERPROFILE on Windows).
+    pub fn without_home(mut self) -> Self {
+        self.no_home = true;
+        self
     }
 
     /// Pre-create a directory relative to the isolated home before running.
@@ -38,7 +46,8 @@ impl ShellHarness {
 
     /// Pre-create a file with the given contents relative to the isolated home.
     pub fn with_file(mut self, path: &str, contents: &str) -> Self {
-        self.setup_files.push((path.to_string(), contents.to_string()));
+        self.setup_files
+            .push((path.to_string(), contents.to_string()));
         self
     }
 
@@ -65,17 +74,27 @@ impl ShellHarness {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("HOME", &home)
             .current_dir(&home);
 
-        // On Windows the home directory comes from USERPROFILE / HOMEDRIVE+HOMEPATH.
-        #[cfg(windows)]
-        {
-            cmd.env("USERPROFILE", &home);
-            if let Some(s) = home.to_str() {
-                if let Some((drive, path)) = s.split_once(':') {
-                    cmd.env("HOMEDRIVE", format!("{drive}:"));
-                    cmd.env("HOMEPATH", if path.is_empty() { "\\" } else { path });
+        if self.no_home {
+            cmd.env_remove("HOME");
+            #[cfg(windows)]
+            {
+                cmd.env_remove("USERPROFILE");
+                cmd.env_remove("HOMEDRIVE");
+                cmd.env_remove("HOMEPATH");
+            }
+        } else {
+            cmd.env("HOME", &home);
+            // On Windows the home directory comes from USERPROFILE / HOMEDRIVE+HOMEPATH.
+            #[cfg(windows)]
+            {
+                cmd.env("USERPROFILE", &home);
+                if let Some(s) = home.to_str() {
+                    if let Some((drive, path)) = s.split_once(':') {
+                        cmd.env("HOMEDRIVE", format!("{drive}:"));
+                        cmd.env("HOMEPATH", if path.is_empty() { "\\" } else { path });
+                    }
                 }
             }
         }
@@ -144,7 +163,8 @@ impl ShellOutput {
         assert!(
             self.stdout.contains(s),
             "expected stdout to contain {s:?}\nstdout:\n{}\nstderr:\n{}",
-            self.stdout, self.stderr,
+            self.stdout,
+            self.stderr,
         );
         self
     }
@@ -161,7 +181,11 @@ impl ShellOutput {
 
     #[track_caller]
     pub fn assert_stdout_empty(&self) -> &Self {
-        assert!(self.stdout.is_empty(), "expected stdout to be empty\nstdout:\n{}", self.stdout);
+        assert!(
+            self.stdout.is_empty(),
+            "expected stdout to be empty\nstdout:\n{}",
+            self.stdout
+        );
         self
     }
 
@@ -170,7 +194,8 @@ impl ShellOutput {
         assert!(
             self.stderr.contains(s),
             "expected stderr to contain {s:?}\nstderr:\n{}\nstdout:\n{}",
-            self.stderr, self.stdout,
+            self.stderr,
+            self.stdout,
         );
         self
     }
@@ -187,7 +212,11 @@ impl ShellOutput {
 
     #[track_caller]
     pub fn assert_stderr_empty(&self) -> &Self {
-        assert!(self.stderr.is_empty(), "expected stderr to be empty\nstderr:\n{}", self.stderr);
+        assert!(
+            self.stderr.is_empty(),
+            "expected stderr to be empty\nstderr:\n{}",
+            self.stderr
+        );
         self
     }
 

@@ -31,7 +31,9 @@ fn echo_with_no_arguments() {
 
 #[test]
 fn echo_with_single_argument() {
-    ShellHarness::new().run("echo hello").assert_stdout_contains("hello");
+    ShellHarness::new()
+        .run("echo hello")
+        .assert_stdout_contains("hello");
 }
 
 #[test]
@@ -114,6 +116,24 @@ fn cd_relative_then_back() {
         .run("cd subdir\ncd ..\npwd\necho done")
         .assert_stdout_contains("done")
         .assert_stderr_empty();
+}
+
+#[test]
+fn cd_no_args_without_home_shows_error() {
+    ShellHarness::new()
+        .without_home()
+        .run("cd\necho survived")
+        .assert_stderr_contains("home directory not set")
+        .assert_stdout_contains("survived");
+}
+
+#[test]
+fn cd_tilde_without_home_shows_error() {
+    ShellHarness::new()
+        .without_home()
+        .run("cd ~\necho survived")
+        .assert_stderr_contains("home directory not set")
+        .assert_stdout_contains("survived");
 }
 
 // ============================================================================
