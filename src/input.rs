@@ -16,6 +16,14 @@ impl InputSource {
     fn new(name: &'static str, bytes: Bytes) -> Self {
         Self { name, bytes }
     }
+
+    /// A zero-content source for synthetic tokens that have no real input origin.
+    pub(crate) fn synthetic() -> Self {
+        Self {
+            name: "<synthetic>",
+            bytes: Bytes::new(),
+        }
+    }
 }
 
 impl SourceCode for InputSource {

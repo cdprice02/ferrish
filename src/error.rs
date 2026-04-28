@@ -1,6 +1,6 @@
 use std::process::ExitStatus;
 
-use crate::arg::{Arg, QuoteStyle};
+use crate::arg::QuoteStyle;
 use crate::command::Command;
 use crate::input::InputSource;
 use miette::{Diagnostic, SourceSpan};
@@ -22,6 +22,12 @@ pub enum ShellError {
     CommandNotFound {
         /// The command name that was not found.
         name: String,
+        /// Byte offset of the command token in the raw input line.
+        #[label("command not found")]
+        span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 
     /// A required operand was not provided.
@@ -29,29 +35,52 @@ pub enum ShellError {
     #[diagnostic(code(ferrish::missing_operand))]
     MissingOperand,
 
+    /// The home directory could not be determined.
+    #[error("home directory not set")]
+    #[diagnostic(code(ferrish::home_not_set))]
+    HomeNotSet,
+
     // --- File system ---
     /// The path does not exist on the filesystem.
-    #[error("no such file or directory: {arg}")]
+    #[error("no such file or directory: {name}")]
     #[diagnostic(code(ferrish::fs::not_found))]
     FileNotFound {
-        /// The argument that referred to the missing path.
-        arg: Arg,
+        /// The path that was not found.
+        name: String,
+        /// Byte offset of the offending argument in the raw input line.
+        #[label("no such file or directory")]
+        span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 
     /// The path exists but is a directory where a regular file was expected.
-    #[error("is a directory: {arg}")]
+    #[error("is a directory: {name}")]
     #[diagnostic(code(ferrish::fs::is_a_directory))]
     IsADirectory {
-        /// The argument that referred to the directory.
-        arg: Arg,
+        /// The path that resolved to a directory.
+        name: String,
+        /// Byte offset of the offending argument in the raw input line.
+        #[label("is a directory")]
+        span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 
     /// The path exists but is a regular file where a directory was expected.
-    #[error("not a directory: {arg}")]
+    #[error("not a directory: {name}")]
     #[diagnostic(code(ferrish::fs::not_a_directory))]
     NotADirectory {
-        /// The argument that referred to the non-directory path.
-        arg: Arg,
+        /// The path that was not a directory.
+        name: String,
+        /// Byte offset of the offending argument in the raw input line.
+        #[label("not a directory")]
+        span: SourceSpan,
+        /// The raw input line this error was produced from.
+        #[source_code]
+        src: InputSource,
     },
 
     // --- Process execution ---
@@ -79,7 +108,6 @@ pub enum ShellError {
         #[diagnostic_source]
         source: Box<ShellError>,
     },
-
 
     // --- I/O ---
     /// An I/O error propagated from the underlying stream.
@@ -130,22 +158,40 @@ impl std::borrow::Borrow<dyn miette::Diagnostic> for Box<ShellError> {
 impl PartialEq for ShellError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::CommandNotFound { name: l }, Self::CommandNotFound { name: r }) => l == r,
-            (Self::FileNotFound { arg: la }, Self::FileNotFound { arg: ra }) => la == ra,
-            (Self::IsADirectory { arg: la }, Self::IsADirectory { arg: ra }) => la == ra,
-            (Self::NotADirectory { arg: la }, Self::NotADirectory { arg: ra }) => la == ra,
+            (Self::CommandNotFound { name: l, .. }, Self::CommandNotFound { name: r, .. }) => {
+                l == r
+            }
+            (Self::FileNotFound { name: la, .. }, Self::FileNotFound { name: ra, .. }) => la == ra,
+            (Self::IsADirectory { name: la, .. }, Self::IsADirectory { name: ra, .. }) => la == ra,
+            (Self::NotADirectory { name: la, .. }, Self::NotADirectory { name: ra, .. }) => {
+                la == ra
+            }
             (Self::NonZeroExit(l0), Self::NonZeroExit(r0)) => l0 == r0,
             (Self::ExecutionFailed(l0), Self::ExecutionFailed(r0)) => {
                 l0.raw_os_error() == r0.raw_os_error()
             }
             (Self::Io(l0), Self::Io(r0)) => l0.raw_os_error() == r0.raw_os_error(),
             (
-                Self::InCommand { command: lc, source: ls },
-                Self::InCommand { command: rc, source: rs },
+                Self::InCommand {
+                    command: lc,
+                    source: ls,
+                },
+                Self::InCommand {
+                    command: rc,
+                    source: rs,
+                },
             ) => lc == rc && ls == rs,
             (
-                Self::UnclosedQuote { style: l_style, span: l_span, .. },
-                Self::UnclosedQuote { style: r_style, span: r_span, .. },
+                Self::UnclosedQuote {
+                    style: l_style,
+                    span: l_span,
+                    ..
+                },
+                Self::UnclosedQuote {
+                    style: r_style,
+                    span: r_span,
+                    ..
+                },
             ) => l_style == r_style && l_span == r_span,
             (
                 Self::EmptyPipelineSegment { span: l_span, .. },
@@ -188,9 +234,17 @@ mod tests {
         Input::new(b"").as_source()
     }
 
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::from((0, 0))
+    }
+
     #[test]
     fn test_display_command_not_found() {
-        let err = ShellError::CommandNotFound { name: "foo".to_string() };
+        let err = ShellError::CommandNotFound {
+            name: "foo".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err.to_string(), "foo: command not found");
     }
 
@@ -201,26 +255,48 @@ mod tests {
     }
 
     #[test]
+    fn test_display_home_not_set() {
+        let err = ShellError::HomeNotSet;
+        assert_eq!(err.to_string(), "home directory not set");
+    }
+
+    #[test]
     fn test_display_file_not_found() {
-        let err = ShellError::FileNotFound { arg: Arg::from("/path/to/file") };
+        let err = ShellError::FileNotFound {
+            name: "/path/to/file".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err.to_string(), "no such file or directory: /path/to/file");
     }
 
     #[test]
     fn test_display_is_a_directory() {
-        let err = ShellError::IsADirectory { arg: Arg::from("/some/dir") };
+        let err = ShellError::IsADirectory {
+            name: "/some/dir".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err.to_string(), "is a directory: /some/dir");
     }
 
     #[test]
     fn test_display_not_a_directory() {
-        let err = ShellError::NotADirectory { arg: Arg::from("/some/file") };
+        let err = ShellError::NotADirectory {
+            name: "/some/file".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err.to_string(), "not a directory: /some/file");
     }
 
     #[test]
     fn test_in_command_prepends_command_name() {
-        let inner = ShellError::FileNotFound { arg: Arg::from("/no/such") };
+        let inner = ShellError::FileNotFound {
+            name: "/no/such".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         let err = ShellError::InCommand {
             command: Command::BuiltIn(crate::command::builtin::BuiltInCommand::new(
                 crate::command::builtin::BuiltInName::Cd,
@@ -234,7 +310,11 @@ mod tests {
     fn test_in_command_fatal_delegates_to_source() {
         let inner = ShellError::ExecutionFailed(std::io::Error::last_os_error());
         let err = ShellError::InCommand {
-            command: Command::Unrecognized(b"mycmd".to_vec()),
+            command: Command::Unrecognized {
+                bytes: b"mycmd".to_vec(),
+                span: dummy_span(),
+                src: dummy_src(),
+            },
             source: Box::new(inner),
         };
         assert!(err.is_fatal());
@@ -276,7 +356,11 @@ mod tests {
         let status = ExitStatus::from_raw(2 << 8);
         let inner = ShellError::NonZeroExit(status);
         let err = ShellError::InCommand {
-            command: Command::Unrecognized(b"foo".to_vec()),
+            command: Command::Unrecognized {
+                bytes: b"foo".to_vec(),
+                span: dummy_span(),
+                src: dummy_src(),
+            },
             source: Box::new(inner),
         };
         assert_eq!(err.as_exit_status(), Some(status));
@@ -284,7 +368,11 @@ mod tests {
 
     #[test]
     fn test_as_exit_status_other_variants_return_none() {
-        let err = ShellError::CommandNotFound { name: "foo".to_string() };
+        let err = ShellError::CommandNotFound {
+            name: "foo".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err.as_exit_status(), None);
     }
 
@@ -296,13 +384,21 @@ mod tests {
 
     #[test]
     fn test_is_fatal_command_not_found() {
-        let err = ShellError::CommandNotFound { name: "foo".to_string() };
+        let err = ShellError::CommandNotFound {
+            name: "foo".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert!(!err.is_fatal());
     }
 
     #[test]
     fn test_is_fatal_file_not_found() {
-        let err = ShellError::FileNotFound { arg: Arg::from("test") };
+        let err = ShellError::FileNotFound {
+            name: "test".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert!(!err.is_fatal());
     }
 
@@ -318,21 +414,41 @@ mod tests {
 
     #[test]
     fn test_equality_file_not_found() {
-        let err1 = ShellError::FileNotFound { arg: Arg::from("file1") };
-        let err2 = ShellError::FileNotFound { arg: Arg::from("file1") };
+        let err1 = ShellError::FileNotFound {
+            name: "file1".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
+        let err2 = ShellError::FileNotFound {
+            name: "file1".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_eq!(err1, err2);
     }
 
     #[test]
     fn test_inequality_file_not_found() {
-        let err1 = ShellError::FileNotFound { arg: Arg::from("file1") };
-        let err2 = ShellError::FileNotFound { arg: Arg::from("file2") };
+        let err1 = ShellError::FileNotFound {
+            name: "file1".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
+        let err2 = ShellError::FileNotFound {
+            name: "file2".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         assert_ne!(err1, err2);
     }
 
     #[test]
     fn test_equality_different_variant() {
-        let err1 = ShellError::CommandNotFound { name: "foo".to_string() };
+        let err1 = ShellError::CommandNotFound {
+            name: "foo".to_string(),
+            span: dummy_span(),
+            src: dummy_src(),
+        };
         let err2 = ShellError::MissingOperand;
         assert_ne!(err1, err2);
     }

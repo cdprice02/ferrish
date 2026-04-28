@@ -7,7 +7,6 @@ use std::thread::{self, JoinHandle};
 use is_executable::IsExecutable;
 
 use crate::{
-    Arg, Command,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
     ctx::ShellCtx,
@@ -17,6 +16,7 @@ use crate::{
     fs,
     parser::Pipeline,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
+    Command,
 };
 
 enum CommandKind {
@@ -100,7 +100,6 @@ enum StageHandle {
     Process(Child, Command),
 }
 
-
 /// Single dispatch for launching any pipeline stage — builtin or executable.
 ///
 /// Both kinds receive resolved IO destinations via [`StageOutput`] and
@@ -131,11 +130,18 @@ fn launch_stage(
             };
             let mut ctx_clone = ctx.clone();
             let h = thread::spawn(move || {
-                execute_builtin(&builtin, args, stdin, &mut *out_w, &mut *err_w, &mut ctx_clone)
-                    .map_err(|e| ShellError::InCommand {
-                        command: Command::BuiltIn(builtin),
-                        source: Box::new(e),
-                    })
+                execute_builtin(
+                    &builtin,
+                    args,
+                    stdin,
+                    &mut *out_w,
+                    &mut *err_w,
+                    &mut ctx_clone,
+                )
+                .map_err(|e| ShellError::InCommand {
+                    command: Command::BuiltIn(builtin),
+                    source: Box::new(e),
+                })
             });
             Ok(StageHandle::Thread(h, cmd_for_handle))
         }
@@ -168,8 +174,10 @@ fn launch_stage(
             }
         }
 
-        Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
-            name: String::from_utf8_lossy(&cmd).into_owned(),
+        Command::Unrecognized { bytes, span, src } => Err(ShellError::CommandNotFound {
+            name: String::from_utf8_lossy(&bytes).into_owned(),
+            span,
+            src,
         }),
     }
 }
@@ -200,7 +208,10 @@ pub fn execute(
             let out: &mut dyn Write = out_file.as_mut().map_or(&mut stdout_default as _, |f| f);
             let err: &mut dyn Write = err_file.as_mut().map_or(&mut stderr_default as _, |f| f);
             execute_builtin(&builtin, args, None, out, err, ctx).map_err(|e| {
-                ShellError::InCommand { command: Command::BuiltIn(builtin), source: Box::new(e) }
+                ShellError::InCommand {
+                    command: Command::BuiltIn(builtin),
+                    source: Box::new(e),
+                }
             })
         }
         Command::Executable(executable) => {
@@ -231,8 +242,10 @@ pub fn execute(
                 })
             }
         }
-        Command::Unrecognized(cmd) => Err(ShellError::CommandNotFound {
-            name: String::from_utf8_lossy(&cmd).into_owned(),
+        Command::Unrecognized { bytes, span, src } => Err(ShellError::CommandNotFound {
+            name: String::from_utf8_lossy(&bytes).into_owned(),
+            span,
+            src,
         }),
     }
 }
@@ -246,10 +259,7 @@ pub fn execute(
 /// stdout and stderr fds.
 ///
 /// Returns `Ok(Some(code))` when the last stage requests shell exit, `Ok(None)` otherwise.
-pub fn execute_pipeline(
-    pipeline: Pipeline,
-    ctx: &mut ShellCtx,
-) -> ShellResult<Option<ExitCode>> {
+pub fn execute_pipeline(pipeline: Pipeline, ctx: &mut ShellCtx) -> ShellResult<Option<ExitCode>> {
     if pipeline.len() == 1 {
         let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
         return execute(cmd, args, ctx, stdout_redir, stderr_redir);
@@ -267,9 +277,7 @@ pub fn execute_pipeline(
 
     let mut handles = Vec::with_capacity(n);
 
-    for (i, (command, args, stdout_redirect, stderr_redirect)) in
-        stages.into_iter().enumerate()
-    {
+    for (i, (command, args, stdout_redirect, stderr_redirect)) in stages.into_iter().enumerate() {
         let stdin: Option<PipeReader> = if i == 0 { None } else { readers[i - 1].take() };
 
         let stdout = if let Some(r) = stdout_redirect {
@@ -295,8 +303,13 @@ pub fn execute_pipeline(
                 drop(writers);
                 for handle in handles {
                     match handle {
-                        StageHandle::Thread(h, _) => { let _ = h.join(); }
-                        StageHandle::Process(mut child, _) => { let _ = child.kill(); let _ = child.wait(); }
+                        StageHandle::Thread(h, _) => {
+                            let _ = h.join();
+                        }
+                        StageHandle::Process(mut child, _) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
                     }
                 }
                 return Err(launch_err);
@@ -410,18 +423,30 @@ fn execute_builtin(
 }
 
 fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
-    let default_target = Arg::from(b"~".as_slice());
-    let target = args.first().unwrap_or(&default_target);
-    let new_dir = fs::resolve_path(&target.into(), ctx.home_dir.as_deref(), &ctx.cwd)?;
-
-    if !new_dir.exists() {
-        return Err(ShellError::FileNotFound { arg: target.clone() });
-    } else if !new_dir.is_dir() {
-        return Err(ShellError::NotADirectory { arg: target.clone() });
-    }
+    let new_dir = if let Some(target) = args.first() {
+        let path = fs::resolve_path(&target.into(), ctx.home_dir.as_deref(), &ctx.cwd)?;
+        if !path.exists() {
+            return Err(ShellError::FileNotFound {
+                name: target.to_string(),
+                span: target.span(),
+                src: target.src(),
+            });
+        } else if !path.is_dir() {
+            return Err(ShellError::NotADirectory {
+                name: target.to_string(),
+                span: target.span(),
+                src: target.src(),
+            });
+        }
+        path
+    } else {
+        ctx.home_dir
+            .as_deref()
+            .ok_or(ShellError::HomeNotSet)?
+            .to_path_buf()
+    };
 
     ctx.cwd = new_dir;
-
     Ok(())
 }
 
@@ -446,15 +471,17 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
     let name = arg.as_bytes();
 
     match resolve_command_type(name) {
-        CommandKind::Builtin(builtin_name) => {
-            writeln!(out, "{} is a shell builtin", builtin_name)?
-        }
+        CommandKind::Builtin(builtin_name) => writeln!(out, "{} is a shell builtin", builtin_name)?,
         CommandKind::Executable(path) => {
             let display_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             writeln!(out, "{} is {}", display_name, path.display())?
         }
         CommandKind::NotFound => {
-            return Err(ShellError::CommandNotFound { name: arg.to_string() })
+            return Err(ShellError::CommandNotFound {
+                name: arg.to_string(),
+                span: arg.span(),
+                src: arg.src(),
+            })
         }
     }
 

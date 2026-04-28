@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+use miette::SourceSpan;
+
+use crate::input::InputSource;
+
 /// A list of shell command arguments.
 pub type Args = Vec<Arg>;
 
@@ -22,54 +26,95 @@ pub enum QuoteStyle {
     Double,
 }
 
-/// Represents a shell command argument.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents a shell command argument produced by the parser.
+///
+/// Every `Arg` carries the byte offset and source of the token as it appeared
+/// in the original input line, so executor errors can embed self-contained
+/// diagnostic labels without any additional context threading.
+#[derive(Debug, Clone)]
 pub enum Arg {
-    /// A raw byte sequence with no preserved quoting metadata.
-    ///
-    /// This variant is treated as unquoted when quote context matters, but it
-    /// does not by itself imply anything about how the value was originally
-    /// constructed or parsed.
-    Literal(Vec<u8>),
-    /// A byte sequence with its quoting origin preserved.
+    /// An unquoted token.
+    Literal {
+        /// The parsed byte content.
+        bytes: Vec<u8>,
+        /// Byte offset and length of this token in the raw input line.
+        span: SourceSpan,
+        /// The raw input line this token was parsed from.
+        src: InputSource,
+    },
+    /// A token whose quoting origin is preserved.
     Quoted {
-        /// The raw byte content of the argument.
+        /// The parsed byte content (quotes stripped, escapes resolved).
         bytes: Vec<u8>,
         /// The quoting context in which this argument was parsed.
         style: QuoteStyle,
+        /// Byte offset and length of this token in the raw input line.
+        span: SourceSpan,
+        /// The raw input line this token was parsed from.
+        src: InputSource,
     },
 }
 
 impl Arg {
-    /// Returns the raw bytes of this argument, regardless of quoting.
+    /// Construct a synthetic argument with no source location.
+    ///
+    /// Use only in tests or for arguments that are not derived from user input.
+    pub fn synthetic(bytes: &[u8]) -> Self {
+        Arg::Literal {
+            bytes: bytes.to_vec(),
+            span: SourceSpan::from((0, 0)),
+            src: InputSource::synthetic(),
+        }
+    }
+
+    /// The parsed byte content of this argument.
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            Arg::Literal(bytes) | Arg::Quoted { bytes, .. } => bytes,
+            Arg::Literal { bytes, .. } | Arg::Quoted { bytes, .. } => bytes,
+        }
+    }
+
+    /// Byte offset and length of this token in the raw input line.
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Arg::Literal { span, .. } | Arg::Quoted { span, .. } => *span,
+        }
+    }
+
+    /// The raw input source this token was parsed from.
+    pub fn src(&self) -> InputSource {
+        match self {
+            Arg::Literal { src, .. } | Arg::Quoted { src, .. } => src.clone(),
         }
     }
 }
 
+impl PartialEq for Arg {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Arg::Literal { bytes: a, .. }, Arg::Literal { bytes: b, .. }) => a == b,
+            (
+                Arg::Quoted {
+                    bytes: a,
+                    style: sa,
+                    ..
+                },
+                Arg::Quoted {
+                    bytes: b,
+                    style: sb,
+                    ..
+                },
+            ) => a == b && sa == sb,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Arg {}
+
 impl std::fmt::Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", String::from_utf8_lossy(self.as_bytes()))
-    }
-}
-
-impl From<&str> for Arg {
-    fn from(val: &str) -> Self {
-        Arg::from(val.as_bytes())
-    }
-}
-
-impl From<&[u8]> for Arg {
-    fn from(val: &[u8]) -> Self {
-        Arg::from(val.to_vec())
-    }
-}
-
-impl From<Vec<u8>> for Arg {
-    fn from(val: Vec<u8>) -> Self {
-        Arg::Literal(val)
     }
 }
 
@@ -84,48 +129,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_arg_from_str() {
-        let arg = Arg::from("hello");
+    fn synthetic_as_bytes() {
+        let arg = Arg::synthetic(b"hello");
         assert_eq!(arg.as_bytes(), b"hello");
-        assert!(matches!(arg, Arg::Literal(_)));
+        assert!(matches!(arg, Arg::Literal { .. }));
     }
 
     #[test]
-    fn test_arg_display() {
-        let arg = Arg::from("display_test");
+    fn display_renders_bytes() {
+        let arg = Arg::synthetic(b"display_test");
         assert_eq!(arg.to_string(), "display_test");
     }
 
     #[test]
-    fn test_arg_equality() {
-        let arg1 = Arg::from("same");
-        let arg2 = Arg::from("same");
+    fn equality_ignores_span_and_src() {
+        let arg1 = Arg::synthetic(b"same");
+        let arg2 = Arg::synthetic(b"same");
         assert_eq!(arg1, arg2);
     }
 
     #[test]
-    fn test_arg_to_pathbuf() {
-        let arg = Arg::from("/path/to/file");
+    fn to_pathbuf() {
+        let arg = Arg::synthetic(b"/path/to/file");
         let pathbuf = PathBuf::from(&arg);
         assert_eq!(pathbuf, PathBuf::from("/path/to/file"));
     }
 
     #[test]
-    fn test_quoted_single_as_bytes() {
+    fn quoted_as_bytes() {
         let arg = Arg::Quoted {
-            bytes: b"hello".to_vec(),
+            bytes: b"hello world".to_vec(),
             style: QuoteStyle::Single,
+            span: SourceSpan::from((0, 13)),
+            src: InputSource::synthetic(),
         };
-        assert_eq!(arg.as_bytes(), b"hello");
-        assert_eq!(arg.to_string(), "hello");
-    }
-
-    #[test]
-    fn test_quoted_double_as_bytes() {
-        let arg = Arg::Quoted {
-            bytes: b"world".to_vec(),
-            style: QuoteStyle::Double,
-        };
-        assert_eq!(arg.as_bytes(), b"world");
+        assert_eq!(arg.as_bytes(), b"hello world");
+        assert_eq!(arg.to_string(), "hello world");
     }
 }
