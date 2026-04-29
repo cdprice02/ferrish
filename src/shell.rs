@@ -5,10 +5,11 @@ use miette::IntoDiagnostic as _;
 
 use crate::{
     ctx::{ShellConfig, ShellCtx},
+    error::ShellError,
     executor,
     exit::ExitCode,
     input::Input,
-    parser, resolver,
+    lexer, parser, resolver,
 };
 
 /// The ferrish shell REPL.
@@ -37,16 +38,16 @@ impl Shell {
     pub fn run_repl(&mut self, reader: &mut dyn BufRead) -> miette::Result<ExitCode> {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
+        let cont_prompt = self.ctx.config.continuation_prompt.clone();
         loop {
             out.write_all(self.ctx.config.prompt.as_bytes())
                 .into_diagnostic()?;
             out.flush().into_diagnostic()?;
 
-            let mut raw = Vec::<u8>::new();
-            let bytes = reader.read_until(b'\n', &mut raw).into_diagnostic()?;
-            if bytes == 0 {
-                return Ok(ExitCode::SUCCESS);
-            }
+            let raw = match collect_input(reader, &mut out, &cont_prompt)? {
+                None => return Ok(ExitCode::SUCCESS),
+                Some(raw) => raw,
+            };
 
             let input = Input::from_vec(raw);
             if input.is_effectively_empty() {
@@ -79,6 +80,55 @@ impl Shell {
                 }
             }
         }
+    }
+}
+
+/// Read one logical input line from `reader`, handling line continuations.
+///
+/// Quote continuation is checked before backslash continuation so that a `\`
+/// inside a quoted string (where it is literal) does not trigger line joining.
+/// Backslash-newline joining is only applied when a real `\n` delimiter was
+/// read; an EOF-terminated chunk ending in `\` is kept as-is.
+///
+/// Returns `None` on EOF before any input is accumulated.
+fn collect_input(
+    reader: &mut dyn BufRead,
+    out: &mut dyn Write,
+    cont_prompt: &str,
+) -> miette::Result<Option<Vec<u8>>> {
+    let mut acc: Vec<u8> = Vec::new();
+
+    loop {
+        let mut line = Vec::new();
+        let n = reader.read_until(b'\n', &mut line).into_diagnostic()?;
+        if n == 0 {
+            return Ok(if acc.is_empty() { None } else { Some(acc) });
+        }
+
+        // Check quote state on acc+line first: a `\` inside a quoted string
+        // is literal and must not be mistaken for a line-continuation marker.
+        let mut candidate = acc.clone();
+        candidate.extend_from_slice(&line);
+        if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&candidate)) {
+            acc = candidate;
+            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
+            out.flush().into_diagnostic()?;
+            continue;
+        }
+
+        // Only join lines on `\<newline>` — not on a `\` at EOF with no
+        // following newline (which would silently drop the backslash).
+        if let Some(without_newline) = line.strip_suffix(b"\n")
+            && without_newline.ends_with(b"\\")
+        {
+            acc.extend_from_slice(&without_newline[..without_newline.len() - 1]);
+            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
+            out.flush().into_diagnostic()?;
+            continue;
+        }
+
+        acc.extend_from_slice(&line);
+        return Ok(Some(acc));
     }
 }
 

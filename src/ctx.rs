@@ -7,6 +7,9 @@ use crate::env;
 pub struct ShellConfig {
     /// The prompt string displayed before each input line.
     pub prompt: String,
+    /// The prompt string displayed when more input is needed (line continuation
+    /// or unclosed quote).
+    pub continuation_prompt: String,
     /// Optional path to the shell history file.
     pub history_path: Option<PathBuf>,
     /// Maximum number of history entries to retain.
@@ -17,6 +20,7 @@ impl Default for ShellConfig {
     fn default() -> Self {
         Self {
             prompt: "\u{1F980}> ".to_string(), // 🦀>
+            continuation_prompt: "> ".to_string(),
             history_path: None,
             max_history: 1000,
         }
