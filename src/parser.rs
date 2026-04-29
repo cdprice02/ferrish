@@ -88,14 +88,14 @@ pub fn parse(input: &Input) -> Result<UnresolvedPipeline, ShellError> {
 
     let stages = segments
         .into_iter()
-        .map(|seg| build_stage(seg, &src))
+        .map(build_stage)
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(UnresolvedPipeline { stages, src })
 }
 
 /// Group a segment's tokens into `Arg` values and extract redirect operators.
-fn build_stage(tokens: Vec<Token>, _src: &InputSource) -> Result<UnresolvedStage, ShellError> {
+fn build_stage(tokens: Vec<Token>) -> Result<UnresolvedStage, ShellError> {
     let grouped = group_into_args(tokens);
 
     let mut iter = grouped.into_iter();
