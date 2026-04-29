@@ -8,7 +8,7 @@ pub struct Cli {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{CommandFactory, error::ErrorKind};
+    use clap::{error::ErrorKind, CommandFactory};
 
     #[test]
     fn cli_debug_assert() {

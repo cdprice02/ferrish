@@ -1,11 +1,11 @@
 #![deny(missing_docs)]
 //! ferrish — an early-stage shell implementation in Rust.
 
-/// CLI argument parsing (--help, --version).
-pub mod cli;
 /// Shell command argument types.
 pub mod arg;
-/// Shell command variants (built-in, executable, unrecognized).
+/// CLI argument parsing (--help, --version).
+pub mod cli;
+/// Shell command variants (built-in, executable).
 pub mod command;
 /// Shell context and configuration.
 pub mod ctx;
@@ -21,15 +21,19 @@ pub mod exit;
 pub mod fs;
 /// Raw input line with trimmed view and leading-offset pre-computed.
 pub mod input;
-/// Input parsing: splits raw bytes into a command and its arguments.
+/// Lexer: tokenizes raw input into [`lexer::Token`] values.
+pub mod lexer;
+/// Input parsing: groups tokens into an unresolved pipeline AST.
 pub mod parser;
 /// I/O redirection descriptors produced by the parser.
 pub mod redirect;
+/// Resolver: maps unresolved commands to [`CommandKind`] variants.
+pub mod resolver;
 /// The interactive REPL shell.
 pub mod shell;
 
 pub use arg::Arg;
-pub use command::Command;
+pub use command::CommandKind;
 pub use ctx::ShellConfig;
 pub use shell::Shell;
 

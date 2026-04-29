@@ -3,7 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) fn resolve_path(path: &PathBuf, home_dir: Option<&Path>, cwd: &Path) -> io::Result<PathBuf> {
+pub(crate) fn resolve_path(
+    path: &PathBuf,
+    home_dir: Option<&Path>,
+    cwd: &Path,
+) -> io::Result<PathBuf> {
     let path = if path.is_absolute() {
         path.clone()
     } else if let Ok(stripped) = path.strip_prefix("~") {
@@ -89,7 +93,10 @@ mod tests {
         let cwd = fake_cwd();
         let path = PathBuf::from("./subdir/nested/file");
         let resolved = resolve_path(&path, None, &cwd).unwrap();
-        assert_eq!(resolved, canonicalize_path(cwd.join("subdir/nested/file")).unwrap());
+        assert_eq!(
+            resolved,
+            canonicalize_path(cwd.join("subdir/nested/file")).unwrap()
+        );
     }
 
     #[test]

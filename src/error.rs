@@ -1,8 +1,8 @@
 use std::process::ExitStatus;
 
-use crate::arg::QuoteStyle;
-use crate::command::Command;
+use crate::command::CommandKind;
 use crate::input::InputSource;
+use crate::lexer::QuoteKind;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
@@ -102,7 +102,7 @@ pub enum ShellError {
     #[diagnostic(code(ferrish::exec::command_error))]
     InCommand {
         /// The command that was executing when the error occurred.
-        command: Command,
+        command: CommandKind,
         /// The underlying shell error.
         #[source]
         #[diagnostic_source]
@@ -117,14 +117,14 @@ pub enum ShellError {
 
     // --- Parse ---
     /// An opening quote was never closed before end of input.
-    #[error("unclosed {style:?} quote")]
+    #[error("unclosed {style} quote")]
     #[diagnostic(
         code(ferrish::parse::unclosed_quote),
         help("add the matching quote to close this token")
     )]
     UnclosedQuote {
         /// The kind of quote that was opened but never closed.
-        style: QuoteStyle,
+        style: QuoteKind,
         /// Absolute byte offset of the opening quote character in the raw input line.
         #[label("quote opened here")]
         span: SourceSpan,
@@ -298,7 +298,7 @@ mod tests {
             src: dummy_src(),
         };
         let err = ShellError::InCommand {
-            command: Command::BuiltIn(crate::command::builtin::BuiltInCommand::new(
+            command: CommandKind::BuiltIn(crate::command::builtin::BuiltInCommand::new(
                 crate::command::builtin::BuiltInName::Cd,
             )),
             source: Box::new(inner),
@@ -310,11 +310,9 @@ mod tests {
     fn test_in_command_fatal_delegates_to_source() {
         let inner = ShellError::ExecutionFailed(std::io::Error::last_os_error());
         let err = ShellError::InCommand {
-            command: Command::Unrecognized {
-                bytes: b"mycmd".to_vec(),
-                span: dummy_span(),
-                src: dummy_src(),
-            },
+            command: CommandKind::BuiltIn(crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Echo,
+            )),
             source: Box::new(inner),
         };
         assert!(err.is_fatal());
@@ -323,21 +321,21 @@ mod tests {
     #[test]
     fn test_display_unclosed_quote_single() {
         let err = ShellError::UnclosedQuote {
-            style: QuoteStyle::Single,
+            style: QuoteKind::Single,
             span: SourceSpan::from((0, 1)),
             src: dummy_src(),
         };
-        assert_eq!(err.to_string(), "unclosed Single quote");
+        assert_eq!(err.to_string(), "unclosed single quote");
     }
 
     #[test]
     fn test_display_unclosed_quote_double() {
         let err = ShellError::UnclosedQuote {
-            style: QuoteStyle::Double,
+            style: QuoteKind::Double,
             span: SourceSpan::from((5, 1)),
             src: dummy_src(),
         };
-        assert_eq!(err.to_string(), "unclosed Double quote");
+        assert_eq!(err.to_string(), "unclosed double quote");
     }
 
     #[cfg(unix)]
@@ -356,11 +354,9 @@ mod tests {
         let status = ExitStatus::from_raw(2 << 8);
         let inner = ShellError::NonZeroExit(status);
         let err = ShellError::InCommand {
-            command: Command::Unrecognized {
-                bytes: b"foo".to_vec(),
-                span: dummy_span(),
-                src: dummy_src(),
-            },
+            command: CommandKind::BuiltIn(crate::command::builtin::BuiltInCommand::new(
+                crate::command::builtin::BuiltInName::Echo,
+            )),
             source: Box::new(inner),
         };
         assert_eq!(err.as_exit_status(), Some(status));
@@ -405,7 +401,7 @@ mod tests {
     #[test]
     fn test_is_fatal_unclosed_quote() {
         let err = ShellError::UnclosedQuote {
-            style: QuoteStyle::Double,
+            style: QuoteKind::Double,
             span: SourceSpan::from((0, 1)),
             src: dummy_src(),
         };
@@ -485,12 +481,12 @@ mod tests {
     #[test]
     fn test_equality_unclosed_quote() {
         let e1 = ShellError::UnclosedQuote {
-            style: QuoteStyle::Single,
+            style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
             src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
-            style: QuoteStyle::Single,
+            style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
             src: dummy_src(),
         };
@@ -500,12 +496,12 @@ mod tests {
     #[test]
     fn test_inequality_unclosed_quote_different_style() {
         let e1 = ShellError::UnclosedQuote {
-            style: QuoteStyle::Single,
+            style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
             src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
-            style: QuoteStyle::Double,
+            style: QuoteKind::Double,
             span: SourceSpan::from((3, 1)),
             src: dummy_src(),
         };

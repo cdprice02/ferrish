@@ -1,4 +1,4 @@
-use std::{env, fs, io, path::PathBuf};
+use std::{env, io, path::PathBuf};
 
 /// Return the current user's home directory, if it can be determined from the environment.
 pub fn home_dir() -> Option<PathBuf> {
@@ -34,17 +34,6 @@ pub fn current_dir() -> Result<PathBuf, io::Error> {
 /// Change the current working directory of the process to `path`.
 pub fn set_current_dir(path: &PathBuf) -> io::Result<()> {
     env::set_current_dir(path)
-}
-
-pub(crate) fn get_path_files() -> impl Iterator<Item = PathBuf> {
-    get_path_dirs().flat_map(|d| {
-        fs::read_dir(d)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .collect::<Vec<_>>()
-    })
 }
 
 pub(crate) fn get_path_dirs() -> impl Iterator<Item = PathBuf> {
