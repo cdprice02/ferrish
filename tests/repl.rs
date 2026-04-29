@@ -107,6 +107,18 @@ fn trailing_backslash_joins_next_line() {
         .assert_stdout_contains("done");
 }
 
+// A backslash inside a single-quoted string is literal — it must not trigger
+// line continuation. The quoted string should span both lines intact.
+#[test]
+fn backslash_inside_single_quote_is_not_continuation() {
+    ShellHarness::new()
+        .run("echo 'hello \\\nworld'\necho done")
+        .assert_stderr_empty()
+        .assert_stdout_contains("hello")
+        .assert_stdout_contains("world")
+        .assert_stdout_contains("done");
+}
+
 #[test]
 fn unknown_command_error_goes_to_stderr_not_stdout() {
     let out = ShellHarness::new().run("commandthatdoesnotexist_xyz");

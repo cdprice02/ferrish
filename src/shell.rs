@@ -85,13 +85,12 @@ impl Shell {
 
 /// Read one logical input line from `reader`, handling line continuations.
 ///
-/// A physical line ending in `\` is joined to the next line (the backslash and
-/// newline are both dropped). A physical line whose accumulated content has an
-/// unclosed quote signals that more input is needed; the newline is kept in the
-/// accumulator so the quoted string receives its literal newline character.
+/// Quote continuation is checked before backslash continuation so that a `\`
+/// inside a quoted string (where it is literal) does not trigger line joining.
+/// Backslash-newline joining is only applied when a real `\n` delimiter was
+/// read; an EOF-terminated chunk ending in `\` is kept as-is.
 ///
-/// In both cases a `cont_prompt` is written to `out` and another physical line
-/// is read. Returns `None` on EOF before any input is accumulated.
+/// Returns `None` on EOF before any input is accumulated.
 fn collect_input(
     reader: &mut dyn BufRead,
     out: &mut dyn Write,
@@ -106,8 +105,22 @@ fn collect_input(
             return Ok(if acc.is_empty() { None } else { Some(acc) });
         }
 
-        let without_newline = line.strip_suffix(b"\n").unwrap_or(&line);
-        if without_newline.ends_with(b"\\") {
+        // Check quote state on acc+line first: a `\` inside a quoted string
+        // is literal and must not be mistaken for a line-continuation marker.
+        let mut candidate = acc.clone();
+        candidate.extend_from_slice(&line);
+        if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&candidate)) {
+            acc = candidate;
+            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
+            out.flush().into_diagnostic()?;
+            continue;
+        }
+
+        // Only join lines on `\<newline>` — not on a `\` at EOF with no
+        // following newline (which would silently drop the backslash).
+        if let Some(without_newline) = line.strip_suffix(b"\n")
+            && without_newline.ends_with(b"\\")
+        {
             acc.extend_from_slice(&without_newline[..without_newline.len() - 1]);
             out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
             out.flush().into_diagnostic()?;
@@ -115,13 +128,6 @@ fn collect_input(
         }
 
         acc.extend_from_slice(&line);
-
-        if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&acc)) {
-            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
-            out.flush().into_diagnostic()?;
-            continue;
-        }
-
         return Ok(Some(acc));
     }
 }
