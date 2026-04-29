@@ -1,58 +1,18 @@
 use std::io::{PipeReader, PipeWriter, Write};
-use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::str::FromStr;
 use std::thread::{self, JoinHandle};
-
-use is_executable::IsExecutable;
 
 use crate::{
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
     ctx::ShellCtx,
-    env::get_path_dirs,
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
-    resolver::ResolvedPipeline,
+    resolver::{self, ResolvedPipeline},
     CommandKind,
 };
-
-/// Result of looking up a command name for the `type` builtin.
-enum CmdLookup {
-    Builtin(BuiltInName),
-    Executable(PathBuf),
-    NotFound,
-}
-
-fn resolve_command_type(name: &[u8]) -> CmdLookup {
-    if !name.is_ascii() {
-        return CmdLookup::NotFound;
-    }
-
-    let name_str = std::str::from_utf8(name).expect("checked ASCII above");
-
-    if let Ok(builtin_name) = BuiltInName::from_str(name_str) {
-        return CmdLookup::Builtin(builtin_name);
-    }
-
-    for dir in get_path_dirs() {
-        let candidate = dir.join(name_str);
-        if candidate.is_executable() {
-            return CmdLookup::Executable(candidate);
-        }
-        #[cfg(windows)]
-        {
-            let candidate_exe = dir.join(format!("{name_str}.exe"));
-            if candidate_exe.is_executable() {
-                return CmdLookup::Executable(candidate_exe);
-            }
-        }
-    }
-
-    CmdLookup::NotFound
-}
 
 /// Open a redirect target file according to its [`RedirectMode`].
 fn open_redirect_file(
@@ -481,15 +441,18 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
     }
 
     let arg = args.first().expect("at least one arg");
-    let name = arg.as_bytes();
 
-    match resolve_command_type(name) {
-        CmdLookup::Builtin(builtin_name) => writeln!(out, "{} is a shell builtin", builtin_name)?,
-        CmdLookup::Executable(path) => {
-            let display_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            writeln!(out, "{} is {}", display_name, path.display())?
+    match resolver::lookup(arg) {
+        Some(CommandKind::BuiltIn(builtin)) => {
+            writeln!(out, "{} is a shell builtin", builtin.name())?
         }
-        CmdLookup::NotFound => {
+        Some(CommandKind::Executable(executable)) => writeln!(
+            out,
+            "{} is {}",
+            executable.name(),
+            executable.file_path().display()
+        )?,
+        None => {
             return Err(ShellError::CommandNotFound {
                 name: arg.to_string(),
                 span: arg.span(),
