@@ -87,23 +87,40 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
         return Some(CommandKind::BuiltIn(BuiltInCommand::new(builtin_name)));
     }
 
+    #[cfg(windows)]
+    let extensions = path_extensions();
+
     for dir in get_path_dirs() {
         let candidate = dir.join(name);
         if candidate.is_executable() {
             return Some(CommandKind::Executable(ExecutableCommand::new(candidate)));
         }
         #[cfg(windows)]
-        {
-            let candidate_exe = dir.join(format!("{name}.exe"));
-            if candidate_exe.is_executable() {
+        for ext in &extensions {
+            let candidate_ext = dir.join(format!("{name}{ext}"));
+            if candidate_ext.is_executable() {
                 return Some(CommandKind::Executable(ExecutableCommand::new(
-                    candidate_exe,
+                    candidate_ext,
                 )));
             }
         }
     }
 
     None
+}
+
+/// Returns the list of executable extensions to probe on Windows.
+///
+/// Reads `PATHEXT` from the environment; falls back to the standard set if unset.
+/// Extensions are lowercased so they join consistently with lowercase names.
+#[cfg(windows)]
+fn path_extensions() -> Vec<String> {
+    std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_ascii_lowercase())
+        .collect()
 }
 
 fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
@@ -172,5 +189,35 @@ mod tests {
         } else {
             panic!("expected CommandNotFound");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_extensions_fallback_when_unset() {
+        // When PATHEXT is unset, must include at least the four standard extensions.
+        std::env::remove_var("PATHEXT");
+        let exts = path_extensions();
+        for expected in &[".com", ".exe", ".bat", ".cmd"] {
+            assert!(
+                exts.iter().any(|e| e == expected),
+                "missing {expected} in fallback PATHEXT: {exts:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_extensions_reads_env() {
+        std::env::set_var("PATHEXT", ".EXE;.PS1");
+        let exts = path_extensions();
+        assert_eq!(exts, vec![".exe", ".ps1"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_extensions_filters_empty_segments() {
+        std::env::set_var("PATHEXT", ".EXE;;.BAT;");
+        let exts = path_extensions();
+        assert_eq!(exts, vec![".exe", ".bat"]);
     }
 }
