@@ -70,49 +70,45 @@ fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
     })
 }
 
-fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
+/// Look up `word` as a command without failing on not-found.
+///
+/// Returns `Some(kind)` if the word resolves to a built-in or PATH executable,
+/// `None` if it is empty, non-ASCII, or not found anywhere on PATH.
+pub fn lookup(word: &Arg) -> Option<CommandKind> {
     let bytes = word.as_bytes();
 
-    if bytes.is_empty() {
-        return Err(ShellError::CommandNotFound {
-            name: String::new(),
-            span: word.span(),
-            src: word.src(),
-        });
-    }
-
-    if !bytes.is_ascii() {
-        return Err(ShellError::CommandNotFound {
-            name: String::from_utf8_lossy(bytes).into_owned(),
-            span: word.span(),
-            src: word.src(),
-        });
+    if bytes.is_empty() || !bytes.is_ascii() {
+        return None;
     }
 
     let name = std::str::from_utf8(bytes).expect("checked ASCII above");
 
     if let Ok(builtin_name) = BuiltInName::from_str(name) {
-        return Ok(CommandKind::BuiltIn(BuiltInCommand::new(builtin_name)));
+        return Some(CommandKind::BuiltIn(BuiltInCommand::new(builtin_name)));
     }
 
     for dir in get_path_dirs() {
         let candidate = dir.join(name);
         if candidate.is_executable() {
-            return Ok(CommandKind::Executable(ExecutableCommand::new(candidate)));
+            return Some(CommandKind::Executable(ExecutableCommand::new(candidate)));
         }
         #[cfg(windows)]
         {
             let candidate_exe = dir.join(format!("{name}.exe"));
             if candidate_exe.is_executable() {
-                return Ok(CommandKind::Executable(ExecutableCommand::new(
+                return Some(CommandKind::Executable(ExecutableCommand::new(
                     candidate_exe,
                 )));
             }
         }
     }
 
-    Err(ShellError::CommandNotFound {
-        name: name.to_string(),
+    None
+}
+
+fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
+    lookup(word).ok_or_else(|| ShellError::CommandNotFound {
+        name: String::from_utf8_lossy(word.as_bytes()).into_owned(),
         span: word.span(),
         src: word.src(),
     })
