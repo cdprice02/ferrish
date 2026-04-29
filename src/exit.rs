@@ -73,5 +73,4 @@ mod tests {
         assert_eq!(ExitCode(0).to_string(), "0");
         assert_eq!(ExitCode(42).to_string(), "42");
     }
-
 }

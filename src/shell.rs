@@ -8,7 +8,7 @@ use crate::{
     executor,
     exit::ExitCode,
     input::Input,
-    parser,
+    parser, resolver,
 };
 
 /// The ferrish shell REPL.
@@ -53,7 +53,14 @@ impl Shell {
                 continue;
             }
 
-            let pipeline = match parser::parse(&input) {
+            let unresolved = match parser::parse(&input) {
+                Ok(r) => r,
+                Err(e) => {
+                    writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
+                    continue;
+                }
+            };
+            let pipeline = match resolver::resolve(unresolved) {
                 Ok(r) => r,
                 Err(e) => {
                     writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;

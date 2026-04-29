@@ -37,12 +37,20 @@ pub struct ShellCtx {
 impl ShellCtx {
     /// Create a new context with default configuration.
     pub fn new(home_dir: Option<PathBuf>, cwd: PathBuf) -> Self {
-        Self { home_dir, cwd, config: ShellConfig::default() }
+        Self {
+            home_dir,
+            cwd,
+            config: ShellConfig::default(),
+        }
     }
 
     /// Create a new context with explicit configuration.
     pub fn with_config(home_dir: Option<PathBuf>, cwd: PathBuf, config: ShellConfig) -> Self {
-        Self { home_dir, cwd, config }
+        Self {
+            home_dir,
+            cwd,
+            config,
+        }
     }
 
     /// Initialize from the current process environment.

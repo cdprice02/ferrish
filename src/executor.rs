@@ -14,43 +14,44 @@ use crate::{
     error::{ShellError, ShellResult},
     exit::ExitCode,
     fs,
-    parser::Pipeline,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
-    Command,
+    resolver::ResolvedPipeline,
+    CommandKind,
 };
 
-enum CommandKind {
+/// Result of looking up a command name for the `type` builtin.
+enum CmdLookup {
     Builtin(BuiltInName),
     Executable(PathBuf),
     NotFound,
 }
 
-fn resolve_command_type(name: &[u8]) -> CommandKind {
+fn resolve_command_type(name: &[u8]) -> CmdLookup {
     if !name.is_ascii() {
-        return CommandKind::NotFound;
+        return CmdLookup::NotFound;
     }
 
     let name_str = std::str::from_utf8(name).expect("checked ASCII above");
 
     if let Ok(builtin_name) = BuiltInName::from_str(name_str) {
-        return CommandKind::Builtin(builtin_name);
+        return CmdLookup::Builtin(builtin_name);
     }
 
     for dir in get_path_dirs() {
         let candidate = dir.join(name_str);
         if candidate.is_executable() {
-            return CommandKind::Executable(candidate);
+            return CmdLookup::Executable(candidate);
         }
         #[cfg(windows)]
         {
             let candidate_exe = dir.join(format!("{name_str}.exe"));
             if candidate_exe.is_executable() {
-                return CommandKind::Executable(candidate_exe);
+                return CmdLookup::Executable(candidate_exe);
             }
         }
     }
 
-    CommandKind::NotFound
+    CmdLookup::NotFound
 }
 
 /// Open a redirect target file according to its [`RedirectMode`].
@@ -95,9 +96,9 @@ enum StageError {
 /// Handle returned after launching one pipeline stage.
 enum StageHandle {
     /// A builtin running in a background thread.
-    Thread(JoinHandle<ShellResult<Option<ExitCode>>>, Command),
+    Thread(JoinHandle<ShellResult<Option<ExitCode>>>, CommandKind),
     /// A spawned OS process.
-    Process(Child, Command),
+    Process(Child, CommandKind),
 }
 
 /// Single dispatch for launching any pipeline stage — builtin or executable.
@@ -109,7 +110,7 @@ enum StageHandle {
 /// [`StageHandle`]; output flows directly through inherited fds or pipe ends
 /// with no intermediate buffering.
 fn launch_stage(
-    command: Command,
+    command: CommandKind,
     args: Args,
     stdin: Option<PipeReader>,
     stdout: StageOutput,
@@ -117,8 +118,8 @@ fn launch_stage(
     ctx: &mut ShellCtx,
 ) -> ShellResult<StageHandle> {
     match command {
-        Command::BuiltIn(builtin) => {
-            let cmd_for_handle = Command::BuiltIn(builtin.clone());
+        CommandKind::BuiltIn(builtin) => {
+            let cmd_for_handle = CommandKind::BuiltIn(builtin.clone());
             let mut out_w: Box<dyn Write + Send> = match stdout {
                 StageOutput::Pipe(pw) => Box::new(pw),
                 StageOutput::File(f) => Box::new(f),
@@ -139,14 +140,14 @@ fn launch_stage(
                     &mut ctx_clone,
                 )
                 .map_err(|e| ShellError::InCommand {
-                    command: Command::BuiltIn(builtin),
+                    command: CommandKind::BuiltIn(builtin),
                     source: Box::new(e),
                 })
             });
             Ok(StageHandle::Thread(h, cmd_for_handle))
         }
 
-        Command::Executable(executable) => {
+        CommandKind::Executable(executable) => {
             let stdin_stdio = stdin.map_or(Stdio::inherit(), Stdio::from);
             let stdout_stdio = match stdout {
                 StageOutput::Pipe(pw) => Stdio::from(pw),
@@ -166,29 +167,26 @@ fn launch_stage(
                 .stderr(stderr_stdio)
                 .spawn()
             {
-                Ok(child) => Ok(StageHandle::Process(child, Command::Executable(executable))),
+                Ok(child) => Ok(StageHandle::Process(
+                    child,
+                    CommandKind::Executable(executable),
+                )),
                 Err(e) => Err(ShellError::InCommand {
-                    command: Command::Executable(executable),
+                    command: CommandKind::Executable(executable),
                     source: Box::new(ShellError::ExecutionFailed(e)),
                 }),
             }
         }
-
-        Command::Unrecognized { bytes, span, src } => Err(ShellError::CommandNotFound {
-            name: String::from_utf8_lossy(&bytes).into_owned(),
-            span,
-            src,
-        }),
     }
 }
 
-/// Dispatch and execute a single parsed command with optional redirects.
+/// Dispatch and execute a single resolved command with optional redirects.
 ///
 /// Builtins run synchronously in the caller's `ctx` so state-mutating commands
 /// like `cd` propagate back to the shell — matching POSIX semantics for
 /// commands that are not part of a multi-command pipeline.
 pub fn execute(
-    command: Command,
+    command: CommandKind,
     args: Args,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
@@ -202,19 +200,19 @@ pub fn execute(
         .transpose()?;
 
     match command {
-        Command::BuiltIn(builtin) => {
+        CommandKind::BuiltIn(builtin) => {
             let mut stdout_default = std::io::stdout();
             let mut stderr_default = std::io::stderr();
             let out: &mut dyn Write = out_file.as_mut().map_or(&mut stdout_default as _, |f| f);
             let err: &mut dyn Write = err_file.as_mut().map_or(&mut stderr_default as _, |f| f);
             execute_builtin(&builtin, args, None, out, err, ctx).map_err(|e| {
                 ShellError::InCommand {
-                    command: Command::BuiltIn(builtin),
+                    command: CommandKind::BuiltIn(builtin),
                     source: Box::new(e),
                 }
             })
         }
-        Command::Executable(executable) => {
+        CommandKind::Executable(executable) => {
             let stdout_stdio = out_file.map_or(Stdio::inherit(), Stdio::from);
             let stderr_stdio = err_file.map_or(Stdio::inherit(), Stdio::from);
             let args_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -226,31 +224,26 @@ pub fn execute(
                 .stderr(stderr_stdio)
                 .spawn()
                 .map_err(|e| ShellError::InCommand {
-                    command: Command::Executable(executable.clone()),
+                    command: CommandKind::Executable(executable.clone()),
                     source: Box::new(ShellError::ExecutionFailed(e)),
                 })?;
             let status = child.wait().map_err(|e| ShellError::InCommand {
-                command: Command::Executable(executable.clone()),
+                command: CommandKind::Executable(executable.clone()),
                 source: Box::new(ShellError::ExecutionFailed(e)),
             })?;
             if status.success() {
                 Ok(None)
             } else {
                 Err(ShellError::InCommand {
-                    command: Command::Executable(executable),
+                    command: CommandKind::Executable(executable),
                     source: Box::new(ShellError::NonZeroExit(status)),
                 })
             }
         }
-        Command::Unrecognized { bytes, span, src } => Err(ShellError::CommandNotFound {
-            name: String::from_utf8_lossy(&bytes).into_owned(),
-            span,
-            src,
-        }),
     }
 }
 
-/// Execute a [`Pipeline`] (one or more `|`-connected commands).
+/// Execute a [`ResolvedPipeline`] (one or more `|`-connected commands).
 ///
 /// A single-stage pipeline delegates to [`execute`]. A multi-stage pipeline
 /// creates N-1 OS-level inter-stage pipes, launches all N stages concurrently,
@@ -259,13 +252,22 @@ pub fn execute(
 /// stdout and stderr fds.
 ///
 /// Returns `Ok(Some(code))` when the last stage requests shell exit, `Ok(None)` otherwise.
-pub fn execute_pipeline(pipeline: Pipeline, ctx: &mut ShellCtx) -> ShellResult<Option<ExitCode>> {
-    if pipeline.len() == 1 {
-        let (cmd, args, stdout_redir, stderr_redir) = pipeline.into_iter().next().unwrap();
-        return execute(cmd, args, ctx, stdout_redir, stderr_redir);
+pub fn execute_pipeline(
+    pipeline: ResolvedPipeline,
+    ctx: &mut ShellCtx,
+) -> ShellResult<Option<ExitCode>> {
+    if pipeline.stages.len() == 1 {
+        let stage = pipeline.stages.into_iter().next().unwrap();
+        return execute(
+            stage.command.kind,
+            stage.args,
+            ctx,
+            stage.stdout_redirect,
+            stage.stderr_redirect,
+        );
     }
 
-    let stages: Vec<_> = pipeline.into_iter().collect();
+    let stages = pipeline.stages;
     let n = stages.len();
 
     let pipe_pairs: std::io::Result<Vec<_>> = (0..n - 1).map(|_| std::io::pipe()).collect();
@@ -277,7 +279,12 @@ pub fn execute_pipeline(pipeline: Pipeline, ctx: &mut ShellCtx) -> ShellResult<O
 
     let mut handles = Vec::with_capacity(n);
 
-    for (i, (command, args, stdout_redirect, stderr_redirect)) in stages.into_iter().enumerate() {
+    for (i, stage) in stages.into_iter().enumerate() {
+        let command = stage.command.kind;
+        let args = stage.args;
+        let stdout_redirect = stage.stdout_redirect;
+        let stderr_redirect = stage.stderr_redirect;
+
         let stdin: Option<PipeReader> = if i == 0 { None } else { readers[i - 1].take() };
 
         let stdout = if let Some(r) = stdout_redirect {
@@ -477,12 +484,12 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
     let name = arg.as_bytes();
 
     match resolve_command_type(name) {
-        CommandKind::Builtin(builtin_name) => writeln!(out, "{} is a shell builtin", builtin_name)?,
-        CommandKind::Executable(path) => {
+        CmdLookup::Builtin(builtin_name) => writeln!(out, "{} is a shell builtin", builtin_name)?,
+        CmdLookup::Executable(path) => {
             let display_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             writeln!(out, "{} is {}", display_name, path.display())?
         }
-        CommandKind::NotFound => {
+        CmdLookup::NotFound => {
             return Err(ShellError::CommandNotFound {
                 name: arg.to_string(),
                 span: arg.span(),
