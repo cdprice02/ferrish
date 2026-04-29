@@ -31,7 +31,9 @@ impl Arg {
     /// Use only in tests or for arguments not derived from user input.
     pub fn synthetic(bytes: &[u8]) -> Self {
         let b = Bytes::copy_from_slice(bytes);
-        let span = SourceSpan::from((0_usize, bytes.len()));
+        // Zero-length span: synthetic source has no bytes, so any non-zero span would be
+        // out-of-bounds if miette ever tries to render it.
+        let span = SourceSpan::from((0_usize, 0_usize));
         let src = InputSource::synthetic();
         Arg {
             tokens: vec![Token {

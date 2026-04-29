@@ -72,9 +72,12 @@ pub fn parse(input: &Input) -> Result<UnresolvedPipeline, ShellError> {
             let pipe_span = if i < pipe_tokens.len() {
                 // leading or middle empty: point at the pipe that follows the empty segment
                 pipe_tokens[i].span
-            } else {
+            } else if i > 0 {
                 // trailing empty: point at the pipe that precedes the empty segment
                 pipe_tokens[i - 1].span
+            } else {
+                // no pipes at all — input was empty/whitespace; use a zero-length span
+                SourceSpan::from((0_usize, 0_usize))
             };
             return Err(ShellError::EmptyPipelineSegment {
                 span: pipe_span,

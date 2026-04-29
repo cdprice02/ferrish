@@ -73,6 +73,14 @@ fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
 fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
     let bytes = word.as_bytes();
 
+    if bytes.is_empty() {
+        return Err(ShellError::CommandNotFound {
+            name: String::new(),
+            span: word.span(),
+            src: word.src(),
+        });
+    }
+
     if !bytes.is_ascii() {
         return Err(ShellError::CommandNotFound {
             name: String::from_utf8_lossy(bytes).into_owned(),
