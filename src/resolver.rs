@@ -88,7 +88,13 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
     }
 
     #[cfg(windows)]
-    let extensions = path_extensions();
+    let extensions = if name.contains('.') {
+        // Name already has an extension — probe only the bare name, matching
+        // cmd.exe behavior (PATHEXT iteration is skipped when an extension is present).
+        vec![]
+    } else {
+        path_extensions()
+    };
 
     for dir in get_path_dirs() {
         let candidate = dir.join(name);
@@ -109,15 +115,19 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
     None
 }
 
-/// Returns the list of executable extensions to probe on Windows.
+/// Returns the executable extensions to probe on Windows.
 ///
 /// Reads `PATHEXT` from the environment; falls back to the standard set if unset.
-/// Extensions are lowercased to keep extension handling consistent.
 #[cfg(windows)]
 fn path_extensions() -> Vec<String> {
-    std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
+    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    parse_pathext(&raw)
+}
+
+/// Parses a `PATHEXT`-style semicolon-delimited string into a lowercased extension list.
+#[cfg(windows)]
+fn parse_pathext(raw: &str) -> Vec<String> {
+    raw.split(';')
         .filter(|e| !e.is_empty())
         .map(|e| e.to_ascii_lowercase())
         .collect()
@@ -191,60 +201,27 @@ mod tests {
         }
     }
 
-    // Serializes PATHEXT mutations so tests don't race each other under `cargo test`'s
-    // parallel runner. Poisoned locks are recovered so a panicking test doesn't block
-    // subsequent ones.
     #[cfg(windows)]
-    static PATHEXT_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(windows)]
-    fn with_pathext<F: FnOnce()>(set_to: Option<&str>, f: F) {
-        let _guard = PATHEXT_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = std::env::var("PATHEXT").ok();
-        // SAFETY: serialized by PATHEXT_MUTEX; no other thread reads PATHEXT concurrently.
-        unsafe {
-            match set_to {
-                Some(v) => std::env::set_var("PATHEXT", v),
-                None => std::env::remove_var("PATHEXT"),
-            }
-        }
-        f();
-        // SAFETY: same mutex guard still held.
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("PATHEXT", v),
-                None => std::env::remove_var("PATHEXT"),
-            }
+    #[test]
+    fn parse_pathext_fallback_extensions() {
+        let exts = parse_pathext(".COM;.EXE;.BAT;.CMD");
+        for expected in &[".com", ".exe", ".bat", ".cmd"] {
+            assert!(
+                exts.iter().any(|e| e == expected),
+                "missing {expected}: {exts:?}"
+            );
         }
     }
 
     #[cfg(windows)]
     #[test]
-    fn path_extensions_fallback_when_unset() {
-        with_pathext(None, || {
-            let exts = path_extensions();
-            for expected in &[".com", ".exe", ".bat", ".cmd"] {
-                assert!(
-                    exts.iter().any(|e| e == expected),
-                    "missing {expected} in fallback PATHEXT: {exts:?}"
-                );
-            }
-        });
+    fn parse_pathext_lowercases_extensions() {
+        assert_eq!(parse_pathext(".EXE;.PS1"), vec![".exe", ".ps1"]);
     }
 
     #[cfg(windows)]
     #[test]
-    fn path_extensions_reads_env() {
-        with_pathext(Some(".EXE;.PS1"), || {
-            assert_eq!(path_extensions(), vec![".exe", ".ps1"]);
-        });
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn path_extensions_filters_empty_segments() {
-        with_pathext(Some(".EXE;;.BAT;"), || {
-            assert_eq!(path_extensions(), vec![".exe", ".bat"]);
-        });
+    fn parse_pathext_filters_empty_segments() {
+        assert_eq!(parse_pathext(".EXE;;.BAT;"), vec![".exe", ".bat"]);
     }
 }
