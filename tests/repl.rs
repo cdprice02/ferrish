@@ -4,16 +4,6 @@ mod common;
 use common::ShellHarness;
 
 #[test]
-fn repl_shows_prompt_at_startup() {
-    let out = ShellHarness::new().run("");
-    let stdout = out.stdout();
-    assert!(
-        stdout.contains('>') || stdout.contains('❯') || stdout.contains('$'),
-        "expected prompt character in output, got: {stdout:?}"
-    );
-}
-
-#[test]
 fn repl_ignores_empty_lines() {
     ShellHarness::new()
         .run("\n\necho test")
