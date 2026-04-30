@@ -92,20 +92,23 @@ impl Shell {
                     acc.clear();
                     continue;
                 }
-                Err(e) => return Err(miette::miette!("{e}")),
+                Err(e) => return Err(e).into_diagnostic(),
             };
 
             let line_bytes = line.as_bytes();
-            let mut candidate = acc.clone();
-            candidate.extend_from_slice(line_bytes);
-            candidate.push(b'\n');
+            // Extend in-place for the quote check — avoids cloning acc each iteration.
+            let acc_len = acc.len();
+            acc.extend_from_slice(line_bytes);
+            acc.push(b'\n');
 
             // Check quote state before checking backslash continuation — a `\`
             // inside a quoted string is literal and must not trigger line joining.
-            if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&candidate)) {
-                acc = candidate;
+            if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&acc)) {
                 continue;
             }
+
+            // Roll back the temporary append; backslash and normal paths rebuild correctly.
+            acc.truncate(acc_len);
 
             // Backslash-newline: join this line to the next, stripping the `\`.
             if line_bytes.ends_with(b"\\") {
@@ -113,9 +116,14 @@ impl Shell {
                 continue;
             }
 
-            let _ = rl.add_history_entry(line.as_str());
             acc.extend_from_slice(line_bytes);
             acc.push(b'\n');
+
+            // Add the full logical command to history, skipping blank inputs.
+            if !Input::new(&acc).is_effectively_empty() {
+                let entry = String::from_utf8_lossy(&acc[..acc.len() - 1]);
+                let _ = rl.add_history_entry(entry.as_ref());
+            }
             return Ok(Some(acc));
         }
     }
