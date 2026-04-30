@@ -6,6 +6,7 @@ use crate::error::ShellError;
 use crate::input::{Input, InputSource};
 use crate::lexer::{lex, Lexer, Token, TokenKind};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
+use std::iter::Peekable;
 
 /// The command position of a pipeline stage before resolution.
 #[derive(Debug)]
@@ -27,21 +28,45 @@ pub struct UnresolvedStage {
     pub stderr_redirect: Option<StderrRedirection>,
 }
 
+/// Observable state of the parser at any point during iteration.
+///
+/// Mirrors [`LexerState`] in structure: flags that drive the state machine are
+/// exposed here so callers can query completeness without re-running a full
+/// parse pass. New state fields (nesting depth, subshell, etc.) are added here
+/// as the shell grammar grows.
+///
+/// [`LexerState`]: crate::lexer::LexerState
+#[derive(Clone, Debug, Default)]
+pub struct ParserState {
+    /// Whether the segment currently being accumulated has received at least
+    /// one token. `false` at the start of a new segment or at the start of
+    /// input; `true` once a non-Pipe token arrives.
+    pub segment_has_tokens: bool,
+}
+
 /// Lazy pipeline iterator produced by [`parse`].
 ///
 /// Yields one [`UnresolvedStage`] per `|`-separated segment of the input as the
 /// resolver pulls them. An empty segment, an unclosed quote, or any other lex
 /// error is reported as a final `Err` item; after that the iterator returns
-/// `None`.
+/// `None`. The parser's current state is always accessible via [`Parser::state`].
 pub struct Parser<'a> {
-    lexer: Lexer<'a>,
+    lexer: Peekable<Lexer<'a>>,
     src: InputSource,
+    state: ParserState,
     /// Tokens accumulated for the segment currently being built.
     pending: Vec<Token>,
     /// The Pipe token that closed the last emitted stage; used to report a
     /// trailing-empty-segment error when the lexer ends with nothing after it.
     last_pipe: Option<Token>,
     done: bool,
+}
+
+impl<'a> Parser<'a> {
+    /// The parser's current state — readable at any point during iteration.
+    pub fn state(&self) -> &ParserState {
+        &self.state
+    }
 }
 
 impl<'a> Iterator for Parser<'a> {
@@ -56,7 +81,7 @@ impl<'a> Iterator for Parser<'a> {
             match self.lexer.next() {
                 None => {
                     self.done = true;
-                    if self.pending.is_empty() {
+                    if !self.state.segment_has_tokens {
                         if let Some(pipe) = self.last_pipe.take() {
                             return Some(Err(ShellError::EmptyPipelineSegment {
                                 span: pipe.span,
@@ -74,7 +99,7 @@ impl<'a> Iterator for Parser<'a> {
                 }
                 Some(Ok(token)) => {
                     if matches!(token.kind, TokenKind::Pipe) {
-                        if self.pending.is_empty() {
+                        if !self.state.segment_has_tokens {
                             self.done = true;
                             return Some(Err(ShellError::EmptyPipelineSegment {
                                 span: token.span,
@@ -82,9 +107,11 @@ impl<'a> Iterator for Parser<'a> {
                             }));
                         }
                         let tokens = std::mem::take(&mut self.pending);
+                        self.state.segment_has_tokens = false;
                         self.last_pipe = Some(token);
                         return Some(build_stage(tokens));
                     } else {
+                        self.state.segment_has_tokens = true;
                         self.pending.push(token);
                     }
                 }
@@ -100,8 +127,9 @@ impl<'a> Iterator for Parser<'a> {
 /// a final `Err` item from the iterator.
 pub fn parse(input: &Input) -> Parser<'_> {
     Parser {
-        lexer: lex(input),
+        lexer: lex(input).peekable(),
         src: input.as_source(),
+        state: ParserState::default(),
         pending: Vec::new(),
         last_pipe: None,
         done: false,

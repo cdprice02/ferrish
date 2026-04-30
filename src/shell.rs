@@ -2,8 +2,8 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use miette::IntoDiagnostic as _;
-use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 use crate::{
     ctx::{ShellConfig, ShellCtx},
@@ -12,6 +12,77 @@ use crate::{
     input::Input,
     lexer, parser, resolver,
 };
+
+/// A single physical line returned by a line-reading source.
+enum LineInput {
+    /// A line of bytes, trailing `\n` stripped — both sources normalize to this.
+    Line(Vec<u8>),
+    /// End of input (EOF or Ctrl+D).
+    Eof,
+    /// User interrupted the current input (Ctrl+C); only rustyline yields this.
+    Interrupted,
+}
+
+/// Collect one logical input unit from `next_line`, handling quote and
+/// backslash-newline continuation.
+///
+/// `next_line` is called with the prompt to display before each physical line.
+/// The first call receives `prompt`; subsequent continuation reads receive
+/// `cont_prompt`. Quote continuation is checked before backslash continuation
+/// so that a `\` inside a quoted string is literal and does not trigger line
+/// joining.
+///
+/// Returns `None` on EOF before any input is accumulated, or `Some(Input)`
+/// once a complete logical line is available.
+fn collect_logical_input(
+    mut next_line: impl FnMut(&str) -> miette::Result<LineInput>,
+    prompt: &str,
+    cont_prompt: &str,
+) -> miette::Result<Option<Input>> {
+    let mut acc: Vec<u8> = Vec::new();
+
+    loop {
+        let current = if acc.is_empty() { prompt } else { cont_prompt };
+
+        let line = match next_line(current)? {
+            LineInput::Eof => {
+                return Ok(if acc.is_empty() {
+                    None
+                } else {
+                    Some(Input::from_vec(acc))
+                });
+            }
+            LineInput::Interrupted => {
+                acc.clear();
+                continue;
+            }
+            LineInput::Line(l) => l,
+        };
+
+        // Build a candidate with this line appended (plus newline) to check
+        // quote state before deciding on continuation.
+        let acc_len = acc.len();
+        acc.extend_from_slice(&line);
+        acc.push(b'\n');
+
+        if lexer::needs_continuation(&acc) {
+            continue;
+        }
+
+        // Roll back; backslash and normal paths rebuild correctly.
+        acc.truncate(acc_len);
+
+        // Backslash-newline: join this line to the next, stripping the `\`.
+        if line.ends_with(b"\\") {
+            acc.extend_from_slice(&line[..line.len() - 1]);
+            continue;
+        }
+
+        acc.extend_from_slice(&line);
+        acc.push(b'\n');
+        return Ok(Some(Input::from_vec(acc)));
+    }
+}
 
 /// The ferrish shell REPL.
 pub struct Shell {
@@ -29,15 +100,34 @@ impl Shell {
     /// Reads from the terminal until `exit` is called or the user signals EOF
     /// (Ctrl+D). Ctrl+C abandons the current input and returns to the prompt.
     /// Diagnostics go to the process's real stderr.
-    pub fn run(&mut self) -> miette::Result<ExitCode> {
-        let mut rl = DefaultEditor::new().into_diagnostic()?;
+    pub fn run_interactive(&mut self) -> miette::Result<ExitCode> {
+        let mut editor = DefaultEditor::new().into_diagnostic()?;
         let mut err = std::io::stderr();
         loop {
-            let raw = match self.collect_input(&mut rl)? {
+            let input = match collect_logical_input(
+                |prompt| match editor.readline(prompt) {
+                    Ok(l) => Ok(LineInput::Line(l.into_bytes())),
+                    Err(ReadlineError::Eof) => Ok(LineInput::Eof),
+                    Err(ReadlineError::Interrupted) => Ok(LineInput::Interrupted),
+                    Err(e) => Err(e).into_diagnostic(),
+                },
+                &self.ctx.config.prompt,
+                &self.ctx.config.continuation_prompt,
+            )? {
                 None => return Ok(ExitCode::SUCCESS),
-                Some(raw) => raw,
+                Some(input) => input,
             };
-            if let Some(exit_code) = self.step(raw, &mut err)? {
+
+            if input.is_effectively_empty() {
+                continue;
+            }
+
+            // Add the complete logical command to history (strip trailing newline).
+            let raw = input.raw_bytes();
+            let entry = String::from_utf8_lossy(&raw[..raw.len().saturating_sub(1)]);
+            let _ = editor.add_history_entry(entry.as_ref());
+
+            if let Some(exit_code) = self.step(input, &mut err)? {
                 return Ok(exit_code);
             }
         }
@@ -45,96 +135,48 @@ impl Shell {
 
     /// Run the shell loop from a [`BufRead`] source.
     ///
-    /// This is the entry point for future script / batch mode; interactive use
-    /// goes through [`Shell::run`]. Prompts and diagnostics go to the process's
-    /// real stdout/stderr.
-    pub fn run_repl(&mut self, reader: &mut dyn BufRead) -> miette::Result<ExitCode> {
+    /// This is the entry point for script / batch mode; interactive use goes
+    /// through [`Shell::run_interactive`]. Prompts and diagnostics go to the
+    /// process's real stdout/stderr.
+    pub fn run_script(&mut self, reader: &mut dyn BufRead) -> miette::Result<ExitCode> {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
-        let prompt = self.ctx.config.prompt.clone();
-        let cont_prompt = self.ctx.config.continuation_prompt.clone();
         loop {
-            out.write_all(prompt.as_bytes()).into_diagnostic()?;
-            out.flush().into_diagnostic()?;
-
-            let raw = match collect_input_from_reader(reader, &mut out, &cont_prompt)? {
+            let input = match collect_logical_input(
+                |prompt| {
+                    out.write_all(prompt.as_bytes()).into_diagnostic()?;
+                    out.flush().into_diagnostic()?;
+                    let mut line = Vec::new();
+                    if reader.read_until(b'\n', &mut line).into_diagnostic()? == 0 {
+                        return Ok(LineInput::Eof);
+                    }
+                    if line.ends_with(b"\n") {
+                        line.pop();
+                    }
+                    Ok(LineInput::Line(line))
+                },
+                &self.ctx.config.prompt,
+                &self.ctx.config.continuation_prompt,
+            )? {
                 None => return Ok(ExitCode::SUCCESS),
-                Some(raw) => raw,
+                Some(input) => input,
             };
-            if let Some(exit_code) = self.step(raw, &mut err)? {
+
+            if input.is_effectively_empty() {
+                continue;
+            }
+
+            if let Some(exit_code) = self.step(input, &mut err)? {
                 return Ok(exit_code);
             }
         }
     }
 
-    /// Collect one logical input line from rustyline, handling quote and
-    /// backslash-newline continuation.
-    fn collect_input(&self, rl: &mut DefaultEditor) -> miette::Result<Option<Vec<u8>>> {
-        let prompt = &self.ctx.config.prompt;
-        let cont_prompt = &self.ctx.config.continuation_prompt;
-        let mut acc: Vec<u8> = Vec::new();
-
-        loop {
-            let current = if acc.is_empty() {
-                prompt.as_str()
-            } else {
-                cont_prompt.as_str()
-            };
-
-            let line = match rl.readline(current) {
-                Ok(l) => l,
-                Err(ReadlineError::Eof) => {
-                    return Ok(if acc.is_empty() { None } else { Some(acc) });
-                }
-                Err(ReadlineError::Interrupted) => {
-                    // Ctrl+C: abandon current input and restart prompt.
-                    acc.clear();
-                    continue;
-                }
-                Err(e) => return Err(e).into_diagnostic(),
-            };
-
-            let line_bytes = line.as_bytes();
-            // Extend in-place for the quote check — avoids cloning acc each iteration.
-            let acc_len = acc.len();
-            acc.extend_from_slice(line_bytes);
-            acc.push(b'\n');
-
-            // Check quote state before checking backslash continuation — a `\`
-            // inside a quoted string is literal and must not trigger line joining.
-            if lexer::needs_continuation(&acc) {
-                continue;
-            }
-
-            // Roll back the temporary append; backslash and normal paths rebuild correctly.
-            acc.truncate(acc_len);
-
-            // Backslash-newline: join this line to the next, stripping the `\`.
-            if line_bytes.ends_with(b"\\") {
-                acc.extend_from_slice(&line_bytes[..line_bytes.len() - 1]);
-                continue;
-            }
-
-            acc.extend_from_slice(line_bytes);
-            acc.push(b'\n');
-
-            // Add the full logical command to history, skipping blank inputs.
-            if !Input::new(&acc).is_effectively_empty() {
-                let entry = String::from_utf8_lossy(&acc[..acc.len() - 1]);
-                let _ = rl.add_history_entry(entry.as_ref());
-            }
-            return Ok(Some(acc));
-        }
-    }
-
     /// Parse and execute one logical input unit. Returns `Some(code)` when the
     /// shell should exit, `None` to continue the REPL loop.
-    fn step(&mut self, raw: Vec<u8>, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
-        let input = Input::from_vec(raw);
-        if input.is_effectively_empty() {
-            return Ok(None);
-        }
-
+    ///
+    /// Callers guarantee `input` is not effectively empty.
+    fn step(&mut self, input: Input, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
         let stages = resolver::resolve(parser::parse(&input));
         match executor::execute_pipeline(stages, &mut self.ctx) {
             Ok(Some(exit_code)) => return Ok(Some(exit_code)),
@@ -148,52 +190,6 @@ impl Shell {
             }
         }
         Ok(None)
-    }
-}
-
-/// Read one logical input line from `reader`, handling quote and
-/// backslash-newline continuation.
-///
-/// Quote continuation is checked before backslash continuation so that a `\`
-/// inside a quoted string (where it is literal) does not trigger line joining.
-/// Backslash-newline joining is only applied when a real `\n` delimiter was
-/// read; an EOF-terminated chunk ending in `\` is kept as-is.
-///
-/// Returns `None` on EOF before any input is accumulated.
-fn collect_input_from_reader(
-    reader: &mut dyn BufRead,
-    out: &mut dyn Write,
-    cont_prompt: &str,
-) -> miette::Result<Option<Vec<u8>>> {
-    let mut acc: Vec<u8> = Vec::new();
-
-    loop {
-        let mut line = Vec::new();
-        let n = reader.read_until(b'\n', &mut line).into_diagnostic()?;
-        if n == 0 {
-            return Ok(if acc.is_empty() { None } else { Some(acc) });
-        }
-
-        let mut candidate = acc.clone();
-        candidate.extend_from_slice(&line);
-        if lexer::needs_continuation(&candidate) {
-            acc = candidate;
-            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
-            out.flush().into_diagnostic()?;
-            continue;
-        }
-
-        if let Some(without_newline) = line.strip_suffix(b"\n")
-            && without_newline.ends_with(b"\\")
-        {
-            acc.extend_from_slice(&without_newline[..without_newline.len() - 1]);
-            out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
-            out.flush().into_diagnostic()?;
-            continue;
-        }
-
-        acc.extend_from_slice(&line);
-        return Ok(Some(acc));
     }
 }
 

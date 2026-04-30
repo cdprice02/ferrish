@@ -8,7 +8,7 @@ use crate::command::executable::ExecutableCommand;
 use crate::command::CommandKind;
 use crate::env::get_path_dirs;
 use crate::error::{ShellError, ShellResult};
-use crate::parser::{Parser, UnresolvedStage};
+use crate::parser::UnresolvedStage;
 use crate::redirect::{StderrRedirection, StdoutRedirection};
 
 /// A resolved command: its kind (built-in or executable) plus the original word arg.
@@ -35,24 +35,31 @@ pub struct ResolvedStage {
 
 /// Lazy resolver iterator produced by [`resolve`].
 ///
-/// Wraps a [`Parser`] and resolves each [`UnresolvedStage`] to a
-/// [`ResolvedStage`] on demand. Errors from parsing or resolution are
-/// forwarded as `Err` items; the first error terminates the iterator.
-pub struct Resolver<'a> {
-    parser: Parser<'a>,
+/// Generic over any upstream stage iterator `I`. Resolves each
+/// [`UnresolvedStage`] to a [`ResolvedStage`] on demand. Errors from
+/// parsing or resolution are forwarded as `Err` items; the first error
+/// terminates the iterator.
+pub struct Resolver<I> {
+    inner: I,
 }
 
-impl<'a> Iterator for Resolver<'a> {
+impl<I> Iterator for Resolver<I>
+where
+    I: Iterator<Item = ShellResult<UnresolvedStage>>,
+{
     type Item = ShellResult<ResolvedStage>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next().map(|r| r.and_then(resolve_stage))
+        self.inner.next().map(|r| r.and_then(resolve_stage))
     }
 }
 
-/// Wrap `parser` in a lazy resolver that resolves each stage on demand.
-pub fn resolve(parser: Parser<'_>) -> Resolver<'_> {
-    Resolver { parser }
+/// Wrap any unresolved-stage iterator in a lazy resolver.
+pub fn resolve<I>(stages: I) -> Resolver<I>
+where
+    I: Iterator<Item = ShellResult<UnresolvedStage>>,
+{
+    Resolver { inner: stages }
 }
 
 fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {

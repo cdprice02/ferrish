@@ -46,7 +46,7 @@ pub use shell::Shell;
 pub fn run() -> miette::Result<exit::ExitCode> {
     use clap::Parser;
     match cli::Cli::try_parse() {
-        Ok(_) => Shell::builder().build().run(),
+        Ok(_) => Shell::builder().build().run_interactive(),
         Err(e) => e.exit(),
     }
 }
