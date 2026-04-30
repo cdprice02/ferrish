@@ -201,14 +201,20 @@ mod tests {
     fn with_pathext<F: FnOnce()>(set_to: Option<&str>, f: F) {
         let _guard = PATHEXT_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = std::env::var("PATHEXT").ok();
-        match set_to {
-            Some(v) => std::env::set_var("PATHEXT", v),
-            None => std::env::remove_var("PATHEXT"),
+        // SAFETY: serialized by PATHEXT_MUTEX; no other thread reads PATHEXT concurrently.
+        unsafe {
+            match set_to {
+                Some(v) => std::env::set_var("PATHEXT", v),
+                None => std::env::remove_var("PATHEXT"),
+            }
         }
         f();
-        match saved {
-            Some(v) => std::env::set_var("PATHEXT", v),
-            None => std::env::remove_var("PATHEXT"),
+        // SAFETY: same mutex guard still held.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("PATHEXT", v),
+                None => std::env::remove_var("PATHEXT"),
+            }
         }
     }
 
