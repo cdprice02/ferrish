@@ -30,13 +30,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 Input flows through: **Shell** → **Parser** → **Executor** → **BuiltIn | Executable**
 
-- `src/shell.rs` — REPL loop; reads input, calls parser, calls executor, handles fatal vs. recoverable errors
+- `src/shell.rs` — REPL loop; `Shell::run()` drives the interactive loop via rustyline; `Shell::run_repl()` is the future script-mode entry point (BufRead-based); `step()` is the shared parse-and-execute helper
 - `src/parser.rs` — Splits input into command + args; resolves whether the command is a built-in, a PATH executable, or unrecognized
 - `src/executor.rs` — Dispatches to built-in handlers or spawns external processes
 - `src/command/builtin.rs` — Implementations of `exit`, `cd`, `echo`, `pwd`, `type`
 - `src/command/executable.rs` — Wraps an external binary found on PATH
 - `src/error.rs` — `ShellError` enum; distinguishes fatal errors (process spawn/wait failures) from recoverable ones (command not found, bad path)
-- `src/io.rs` — `ShellIo` trait with `StandardIo` (real I/O) and `MockIo` (testing); this abstraction is what makes unit tests possible without spawning a process
 - `src/ctx.rs` — `ShellCtx` (runtime state: cwd, home dir, config) and `ShellConfig` (prompt, history settings)
 - `src/arg.rs` — `Arg` enum representing a parsed command argument (currently a `Literal` byte-sequence variant)
 - `src/env.rs` — PATH resolution, home directory lookup, and current-directory helpers
@@ -47,10 +46,12 @@ Input flows through: **Shell** → **Parser** → **Executor** → **BuiltIn | E
 
 Two layers:
 
-1. **Unit tests** — embedded in each module via `#[cfg(test)]`, use `MockIo` for I/O
-2. **Integration tests** (`tests/`) — exercise the `ferrish::Shell` library via the `ShellTest` harness in `tests/harness.rs`, using `MockIo` for I/O
+1. **Unit tests** — embedded in each module via `#[cfg(test)]`
+2. **Integration tests** (`tests/`) — spawn the `ferrish` binary as a subprocess via `ShellHarness` in `tests/common/mod.rs`, feed commands via stdin, and capture stdout/stderr/exit code
 
-The `ShellTest` builder in `harness.rs` is the primary integration test interface. It runs the shell in-process, creates an isolated `HOME` via `tempfile`, and captures stdout/stderr. Prefer integration tests for anything user-visible.
+`ShellHarness` is the primary integration test interface. It runs in an isolated `tempfile` directory. Prefer integration tests for anything user-visible.
+
+Note: integration tests pipe stdin to the binary (non-TTY). The interactive rustyline path (`Shell::run`) suppresses the prompt in non-TTY mode, which is correct shell behavior — tests should not assert on prompt output.
 
 ## Key Conventions
 
