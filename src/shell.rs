@@ -7,7 +7,6 @@ use rustyline::error::ReadlineError;
 
 use crate::{
     ctx::{ShellConfig, ShellCtx},
-    error::ShellError,
     executor,
     exit::ExitCode,
     input::Input,
@@ -103,7 +102,7 @@ impl Shell {
 
             // Check quote state before checking backslash continuation — a `\`
             // inside a quoted string is literal and must not trigger line joining.
-            if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&acc)) {
+            if lexer::needs_continuation(&acc) {
                 continue;
             }
 
@@ -136,21 +135,8 @@ impl Shell {
             return Ok(None);
         }
 
-        let unresolved = match parser::parse(&input) {
-            Ok(r) => r,
-            Err(e) => {
-                writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
-                return Ok(None);
-            }
-        };
-        let pipeline = match resolver::resolve(unresolved) {
-            Ok(r) => r,
-            Err(e) => {
-                writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
-                return Ok(None);
-            }
-        };
-        match executor::execute_pipeline(pipeline, &mut self.ctx) {
+        let stages = resolver::resolve(parser::parse(&input));
+        match executor::execute_pipeline(stages, &mut self.ctx) {
             Ok(Some(exit_code)) => return Ok(Some(exit_code)),
             Ok(None) => {}
             Err(e) => {
@@ -190,7 +176,7 @@ fn collect_input_from_reader(
 
         let mut candidate = acc.clone();
         candidate.extend_from_slice(&line);
-        if let Err(ShellError::UnclosedQuote { .. }) = lexer::lex(&Input::new(&candidate)) {
+        if lexer::needs_continuation(&candidate) {
             acc = candidate;
             out.write_all(cont_prompt.as_bytes()).into_diagnostic()?;
             out.flush().into_diagnostic()?;

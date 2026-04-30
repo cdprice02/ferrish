@@ -4,7 +4,7 @@ use miette::SourceSpan;
 use crate::arg::{Arg, Args};
 use crate::error::ShellError;
 use crate::input::{Input, InputSource};
-use crate::lexer::{lex, Token, TokenKind};
+use crate::lexer::{lex, Lexer, Token, TokenKind};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 
 /// The command position of a pipeline stage before resolution.
@@ -27,71 +27,85 @@ pub struct UnresolvedStage {
     pub stderr_redirect: Option<StderrRedirection>,
 }
 
-/// A parsed pipeline before command resolution.
+/// Lazy pipeline iterator produced by [`parse`].
 ///
-/// A single command with no `|` is represented as a `Vec` of length 1.
-#[derive(Debug)]
-pub struct UnresolvedPipeline {
-    /// The stages of the pipeline, one per `|`-separated segment.
-    pub stages: Vec<UnresolvedStage>,
-    /// The raw input source this pipeline was parsed from.
-    pub src: InputSource,
+/// Yields one [`UnresolvedStage`] per `|`-separated segment of the input as the
+/// resolver pulls them. An empty segment, an unclosed quote, or any other lex
+/// error is reported as a final `Err` item; after that the iterator returns
+/// `None`.
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+    src: InputSource,
+    /// Tokens accumulated for the segment currently being built.
+    pending: Vec<Token>,
+    /// The Pipe token that closed the last emitted stage; used to report a
+    /// trailing-empty-segment error when the lexer ends with nothing after it.
+    last_pipe: Option<Token>,
+    done: bool,
 }
 
-/// Parse a raw input line into an [`UnresolvedPipeline`].
-///
-/// Lexes the input, splits on unquoted `|` tokens, validates that no segment
-/// is empty, and groups adjacent tokens into [`Arg`] values within each stage.
-/// Redirect operators are extracted from the argument list.
-///
-/// # Errors
-///
-/// Returns [`ShellError::UnclosedQuote`] if a quote is never closed, or
-/// [`ShellError::EmptyPipelineSegment`] if a `|` produces an empty stage.
-pub fn parse(input: &Input) -> Result<UnresolvedPipeline, ShellError> {
-    let tokens = lex(input)?;
-    let src = input.as_source();
+impl<'a> Iterator for Parser<'a> {
+    type Item = Result<UnresolvedStage, ShellError>;
 
-    // Partition the flat token list into segments on Pipe tokens.
-    let mut segments: Vec<Vec<Token>> = Vec::new();
-    let mut pipe_tokens: Vec<Token> = Vec::new();
-    let mut current: Vec<Token> = Vec::new();
-    for token in tokens {
-        if matches!(token.kind, TokenKind::Pipe) {
-            pipe_tokens.push(token);
-            segments.push(std::mem::take(&mut current));
-        } else {
-            current.push(token);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        loop {
+            match self.lexer.next() {
+                None => {
+                    self.done = true;
+                    if self.pending.is_empty() {
+                        if let Some(pipe) = self.last_pipe.take() {
+                            return Some(Err(ShellError::EmptyPipelineSegment {
+                                span: pipe.span,
+                                src: self.src.clone(),
+                            }));
+                        }
+                        return None;
+                    }
+                    let tokens = std::mem::take(&mut self.pending);
+                    return Some(build_stage(tokens));
+                }
+                Some(Err(e)) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+                Some(Ok(token)) => {
+                    if matches!(token.kind, TokenKind::Pipe) {
+                        if self.pending.is_empty() {
+                            self.done = true;
+                            return Some(Err(ShellError::EmptyPipelineSegment {
+                                span: token.span,
+                                src: self.src.clone(),
+                            }));
+                        }
+                        let tokens = std::mem::take(&mut self.pending);
+                        self.last_pipe = Some(token);
+                        return Some(build_stage(tokens));
+                    } else {
+                        self.pending.push(token);
+                    }
+                }
+            }
         }
     }
-    segments.push(current);
+}
 
-    // Check for empty segments (whitespace-only between pipes produces no tokens).
-    for (i, segment) in segments.iter().enumerate() {
-        if segment.is_empty() {
-            let pipe_span = if i < pipe_tokens.len() {
-                // leading or middle empty: point at the pipe that follows the empty segment
-                pipe_tokens[i].span
-            } else if i > 0 {
-                // trailing empty: point at the pipe that precedes the empty segment
-                pipe_tokens[i - 1].span
-            } else {
-                // no pipes at all — input was empty/whitespace; use a zero-length span
-                SourceSpan::from((0_usize, 0_usize))
-            };
-            return Err(ShellError::EmptyPipelineSegment {
-                span: pipe_span,
-                src: src.clone(),
-            });
-        }
+/// Parse `input` into a lazy pipeline iterator.
+///
+/// Tokens are consumed from the lexer on demand as the caller pulls stages.
+/// An unclosed quote, empty pipeline segment, or other error is reported as
+/// a final `Err` item from the iterator.
+pub fn parse(input: &Input) -> Parser<'_> {
+    Parser {
+        lexer: lex(input),
+        src: input.as_source(),
+        pending: Vec::new(),
+        last_pipe: None,
+        done: false,
     }
-
-    let stages = segments
-        .into_iter()
-        .map(build_stage)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(UnresolvedPipeline { stages, src })
 }
 
 /// Group a segment's tokens into `Arg` values and extract redirect operators.
@@ -231,14 +245,15 @@ mod tests {
     use super::*;
     use crate::lexer::QuoteKind;
 
-    fn parse_raw(raw: &[u8]) -> Result<UnresolvedPipeline, ShellError> {
-        parse(&Input::new(raw))
+    fn parse_raw(raw: &[u8]) -> Result<Vec<UnresolvedStage>, ShellError> {
+        let input = Input::new(raw);
+        parse(&input).collect()
     }
 
     fn parse_single(raw: &[u8]) -> UnresolvedStage {
-        let mut pipeline = parse_raw(raw).unwrap();
-        assert_eq!(pipeline.stages.len(), 1, "expected exactly one stage");
-        pipeline.stages.remove(0)
+        let mut stages = parse_raw(raw).unwrap();
+        assert_eq!(stages.len(), 1, "expected exactly one stage");
+        stages.remove(0)
     }
 
     fn stage_bytes(stage: &UnresolvedStage) -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -432,7 +447,7 @@ mod tests {
         assert_eq!(args, vec![b"hello".to_vec()]);
     }
 
-    // --- Token-structure tests (replaces QuoteStyle tests) ---
+    // --- Token-structure tests ---
 
     #[test]
     fn test_unquoted_arg_has_single_word_token() {
@@ -701,42 +716,38 @@ mod tests {
     #[test]
     fn test_pipeline_single_command_gives_one_stage() {
         let p = parse_raw(b"echo hello").unwrap();
-        assert_eq!(p.stages.len(), 1);
+        assert_eq!(p.len(), 1);
     }
 
     #[test]
     fn test_pipeline_two_commands_gives_two_stages() {
         let p = parse_raw(b"echo foo | cat").unwrap();
-        assert_eq!(p.stages.len(), 2);
-        assert_eq!(p.stages[0].command.word.as_bytes(), b"echo");
-        assert_eq!(p.stages[0].args[0].as_bytes(), b"foo");
-        assert_eq!(p.stages[1].command.word.as_bytes(), b"cat");
-        assert!(p.stages[1].args.is_empty());
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].command.word.as_bytes(), b"echo");
+        assert_eq!(p[0].args[0].as_bytes(), b"foo");
+        assert_eq!(p[1].command.word.as_bytes(), b"cat");
+        assert!(p[1].args.is_empty());
     }
 
     #[test]
     fn test_pipeline_quoted_pipe_is_not_separator() {
         let p = parse_raw(b"echo 'foo | bar'").unwrap();
-        assert_eq!(p.stages.len(), 1, "quoted | must not split the pipeline");
-        assert_eq!(p.stages[0].args[0].as_bytes(), b"foo | bar");
+        assert_eq!(p.len(), 1, "quoted | must not split the pipeline");
+        assert_eq!(p[0].args[0].as_bytes(), b"foo | bar");
     }
 
     #[test]
     fn test_pipeline_double_quoted_pipe_is_not_separator() {
         let p = parse_raw(b"echo \"foo | bar\"").unwrap();
-        assert_eq!(
-            p.stages.len(),
-            1,
-            "double-quoted | must not split the pipeline"
-        );
-        assert_eq!(p.stages[0].args[0].as_bytes(), b"foo | bar");
+        assert_eq!(p.len(), 1, "double-quoted | must not split the pipeline");
+        assert_eq!(p[0].args[0].as_bytes(), b"foo | bar");
     }
 
     #[test]
     fn test_pipeline_last_stage_redirect() {
         let p = parse_raw(b"echo foo | cat > out.txt").unwrap();
-        assert_eq!(p.stages.len(), 2);
-        let r = p.stages[1]
+        assert_eq!(p.len(), 2);
+        let r = p[1]
             .stdout_redirect
             .as_ref()
             .expect("last stage should have redirect");

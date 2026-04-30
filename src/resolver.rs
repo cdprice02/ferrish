@@ -8,8 +8,7 @@ use crate::command::executable::ExecutableCommand;
 use crate::command::CommandKind;
 use crate::env::get_path_dirs;
 use crate::error::{ShellError, ShellResult};
-use crate::input::InputSource;
-use crate::parser::{UnresolvedPipeline, UnresolvedStage};
+use crate::parser::{Parser, UnresolvedStage};
 use crate::redirect::{StderrRedirection, StdoutRedirection};
 
 /// A resolved command: its kind (built-in or executable) plus the original word arg.
@@ -34,29 +33,26 @@ pub struct ResolvedStage {
     pub stderr_redirect: Option<StderrRedirection>,
 }
 
-/// A pipeline with all commands resolved to built-ins or executables.
-#[derive(Debug)]
-pub struct ResolvedPipeline {
-    /// The stages of the pipeline, one per `|`-separated segment.
-    pub stages: Vec<ResolvedStage>,
-    /// The raw input source this pipeline was parsed from.
-    pub src: InputSource,
+/// Lazy resolver iterator produced by [`resolve`].
+///
+/// Wraps a [`Parser`] and resolves each [`UnresolvedStage`] to a
+/// [`ResolvedStage`] on demand. Errors from parsing or resolution are
+/// forwarded as `Err` items; the first error terminates the iterator.
+pub struct Resolver<'a> {
+    parser: Parser<'a>,
 }
 
-/// Resolve all commands in `pipeline` to [`CommandKind::BuiltIn`] or [`CommandKind::Executable`].
-///
-/// Fails fast on the first unrecognised command with [`ShellError::CommandNotFound`].
-pub fn resolve(pipeline: UnresolvedPipeline) -> ShellResult<ResolvedPipeline> {
-    let stages = pipeline
-        .stages
-        .into_iter()
-        .map(resolve_stage)
-        .collect::<ShellResult<Vec<_>>>()?;
+impl<'a> Iterator for Resolver<'a> {
+    type Item = ShellResult<ResolvedStage>;
 
-    Ok(ResolvedPipeline {
-        stages,
-        src: pipeline.src,
-    })
+    fn next(&mut self) -> Option<Self::Item> {
+        self.parser.next().map(|r| r.and_then(resolve_stage))
+    }
+}
+
+/// Wrap `parser` in a lazy resolver that resolves each stage on demand.
+pub fn resolve(parser: Parser<'_>) -> Resolver<'_> {
+    Resolver { parser }
 }
 
 fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
@@ -147,14 +143,13 @@ mod tests {
     use crate::input::Input;
     use crate::parser;
 
-    fn resolve_raw(raw: &[u8]) -> ShellResult<ResolvedPipeline> {
+    fn resolve_raw(raw: &[u8]) -> ShellResult<Vec<ResolvedStage>> {
         let input = Input::new(raw);
-        let pipeline = parser::parse(&input)?;
-        resolve(pipeline)
+        resolve(parser::parse(&input)).collect()
     }
 
     fn resolve_single(raw: &[u8]) -> ResolvedStage {
-        resolve_raw(raw).unwrap().stages.remove(0)
+        resolve_raw(raw).unwrap().remove(0)
     }
 
     #[test]
