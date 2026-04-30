@@ -87,23 +87,50 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
         return Some(CommandKind::BuiltIn(BuiltInCommand::new(builtin_name)));
     }
 
+    #[cfg(windows)]
+    let extensions = if name.contains('.') {
+        // Name already has an extension — probe only the bare name, matching
+        // cmd.exe behavior (PATHEXT iteration is skipped when an extension is present).
+        vec![]
+    } else {
+        path_extensions()
+    };
+
     for dir in get_path_dirs() {
         let candidate = dir.join(name);
         if candidate.is_executable() {
             return Some(CommandKind::Executable(ExecutableCommand::new(candidate)));
         }
         #[cfg(windows)]
-        {
-            let candidate_exe = dir.join(format!("{name}.exe"));
-            if candidate_exe.is_executable() {
+        for ext in &extensions {
+            let candidate_ext = dir.join(format!("{name}{ext}"));
+            if candidate_ext.is_executable() {
                 return Some(CommandKind::Executable(ExecutableCommand::new(
-                    candidate_exe,
+                    candidate_ext,
                 )));
             }
         }
     }
 
     None
+}
+
+/// Returns the executable extensions to probe on Windows.
+///
+/// Reads `PATHEXT` from the environment; falls back to the standard set if unset.
+#[cfg(windows)]
+fn path_extensions() -> Vec<String> {
+    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    parse_pathext(&raw)
+}
+
+/// Parses a `PATHEXT`-style semicolon-delimited string into a lowercased extension list.
+#[cfg(windows)]
+fn parse_pathext(raw: &str) -> Vec<String> {
+    raw.split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_ascii_lowercase())
+        .collect()
 }
 
 fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
@@ -172,5 +199,29 @@ mod tests {
         } else {
             panic!("expected CommandNotFound");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_pathext_fallback_extensions() {
+        let exts = parse_pathext(".COM;.EXE;.BAT;.CMD");
+        for expected in &[".com", ".exe", ".bat", ".cmd"] {
+            assert!(
+                exts.iter().any(|e| e == expected),
+                "missing {expected}: {exts:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_pathext_lowercases_extensions() {
+        assert_eq!(parse_pathext(".EXE;.PS1"), vec![".exe", ".ps1"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_pathext_filters_empty_segments() {
+        assert_eq!(parse_pathext(".EXE;;.BAT;"), vec![".exe", ".bat"]);
     }
 }
