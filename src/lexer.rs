@@ -42,6 +42,57 @@ impl LexerState {
     pub fn is_complete(&self) -> bool {
         self.open_quote.is_none()
     }
+
+    /// Returns `true` when accumulated input is incomplete and more is needed.
+    pub fn needs_continuation(&self) -> bool {
+        self.open_quote.is_some()
+    }
+
+    /// Update quote state by scanning `bytes` without building tokens.
+    ///
+    /// Processes each byte and updates `open_quote` to reflect quote opens and
+    /// closes. May be called repeatedly on successive chunks; state accumulates
+    /// across calls, making it O(n) for new bytes only.
+    ///
+    /// Escape and quote semantics mirror the `Lexer` state machine in
+    /// `Iterator::next`. Keep both in sync when extending the grammar.
+    pub fn scan_bytes(&mut self, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            match self.open_quote {
+                Some(QuoteKind::Single) => {
+                    if bytes[i] == b'\'' {
+                        self.open_quote = None;
+                    }
+                    i += 1;
+                }
+                Some(QuoteKind::Double) => {
+                    // \" and \\ are escapes; skip both bytes so the second byte
+                    // does not incorrectly close or open a quote.
+                    if bytes[i] == b'\\'
+                        && i + 1 < bytes.len()
+                        && matches!(bytes[i + 1], b'"' | b'\\')
+                    {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        self.open_quote = None;
+                    }
+                    i += 1;
+                }
+                None => {
+                    match bytes[i] {
+                        b'\'' => self.open_quote = Some(QuoteKind::Single),
+                        b'"' => self.open_quote = Some(QuoteKind::Double),
+                        b'\\' if i + 1 < bytes.len() => i += 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
 }
 
 /// The syntactic kind of a lexed token.
@@ -230,8 +281,8 @@ impl<'a> Iterator for Lexer<'a> {
             match byte {
                 b'\'' => {
                     if let Some(token) = self.flush_word(self.abs_start + self.i) {
-                        // Return the pending word. i still points at the quote so the
-                        // opening quote is handled on the next call.
+                        // Return the pending word; the opening quote is recorded and i
+                        // advances past it so the next call resumes inside the quote.
                         self.quote_start_i = self.i;
                         self.state.open_quote = Some(QuoteKind::Single);
                         self.i += 1;
@@ -348,14 +399,10 @@ pub fn lex(input: &Input) -> Lexer<'_> {
 /// Returns `true` when `bytes` ends in an incomplete construct (e.g. an
 /// unclosed quote) that requires more input before a complete command can
 /// be parsed.
-///
-/// Both REPL input paths call this after appending each physical line to
-/// their accumulation buffer.
 pub fn needs_continuation(bytes: &[u8]) -> bool {
-    let input = Input::new(bytes);
-    let mut lexer = lex(&input);
-    for _ in &mut lexer {}
-    !lexer.state().is_complete()
+    let mut state = LexerState::default();
+    state.scan_bytes(bytes);
+    state.needs_continuation()
 }
 
 #[cfg(test)]
@@ -481,6 +528,15 @@ mod tests {
         let tokens = lex_raw(b"  echo");
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].span.offset(), 2);
+    }
+
+    #[test]
+    fn scan_bytes_incremental_detects_multiline_quote() {
+        let mut state = LexerState::default();
+        state.scan_bytes(b"echo 'hello\n");
+        assert!(state.needs_continuation());
+        state.scan_bytes(b"world'\n");
+        assert!(!state.needs_continuation());
     }
 
     #[test]

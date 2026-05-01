@@ -40,12 +40,16 @@ fn collect_logical_input(
     cont_prompt: &str,
 ) -> miette::Result<Option<Input>> {
     let mut acc: Vec<u8> = Vec::new();
+    let mut lex_state = lexer::LexerState::default();
 
     loop {
         let current = if acc.is_empty() { prompt } else { cont_prompt };
 
         let line = match next_line(current)? {
             LineInput::Eof => {
+                if !acc.is_empty() && !acc.ends_with(b"\n") {
+                    acc.push(b'\n');
+                }
                 return Ok(if acc.is_empty() {
                     None
                 } else {
@@ -54,23 +58,23 @@ fn collect_logical_input(
             }
             LineInput::Interrupted => {
                 acc.clear();
+                lex_state = lexer::LexerState::default();
                 continue;
             }
             LineInput::Line(l) => l,
         };
 
-        // Build a candidate with this line appended (plus newline) to check
-        // quote state before deciding on continuation.
-        let acc_len = acc.len();
-        acc.extend_from_slice(&line);
-        acc.push(b'\n');
+        // Scan new bytes into the quote-state tracker — O(n) for this line only,
+        // not the full accumulation. Semantics mirror LexerState::scan_bytes;
+        // see lexer.rs for the escape and quote rules.
+        lex_state.scan_bytes(&line);
+        lex_state.scan_bytes(b"\n");
 
-        if lexer::needs_continuation(&acc) {
+        if lex_state.needs_continuation() {
+            acc.extend_from_slice(&line);
+            acc.push(b'\n');
             continue;
         }
-
-        // Roll back; backslash and normal paths rebuild correctly.
-        acc.truncate(acc_len);
 
         // Backslash-newline: join this line to the next, stripping the `\`.
         if line.ends_with(b"\\") {
@@ -124,7 +128,7 @@ impl Shell {
 
             // Add the complete logical command to history (strip trailing newline).
             let raw = input.raw_bytes();
-            let entry = String::from_utf8_lossy(&raw[..raw.len().saturating_sub(1)]);
+            let entry = String::from_utf8_lossy(raw.strip_suffix(b"\n").unwrap_or(raw));
             let _ = editor.add_history_entry(entry.as_ref());
 
             if let Some(exit_code) = self.step(input, &mut err)? {
