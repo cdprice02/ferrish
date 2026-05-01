@@ -37,11 +37,10 @@ pub struct ResolvedStage {
 ///
 /// Generic over any upstream stage iterator `I`. Resolves each
 /// [`UnresolvedStage`] to a [`ResolvedStage`] on demand. Errors from
-/// parsing or resolution are forwarded as `Err` items; the first error
-/// terminates the iterator.
+/// parsing or resolution are forwarded as `Err` items; the consumer is
+/// responsible for stopping on the first error.
 pub struct Resolver<I> {
     inner: I,
-    done: bool,
 }
 
 impl<I> Iterator for Resolver<I>
@@ -51,14 +50,7 @@ where
     type Item = ShellResult<ResolvedStage>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        let item = self.inner.next().map(|r| r.and_then(resolve_stage));
-        if matches!(item, Some(Err(_))) {
-            self.done = true;
-        }
-        item
+        self.inner.next().map(|r| r.and_then(resolve_stage))
     }
 }
 
@@ -67,10 +59,7 @@ pub fn resolve<I>(stages: I) -> Resolver<I>
 where
     I: Iterator<Item = ShellResult<UnresolvedStage>>,
 {
-    Resolver {
-        inner: stages,
-        done: false,
-    }
+    Resolver { inner: stages }
 }
 
 fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
@@ -212,17 +201,6 @@ mod tests {
         } else {
             panic!("expected CommandNotFound");
         }
-    }
-
-    #[test]
-    fn resolver_stops_after_first_error() {
-        let input = Input::new(b"unknown_cmd_xyz | echo foo");
-        let mut resolver = resolve(parser::parse(&input));
-        assert!(matches!(
-            resolver.next(),
-            Some(Err(ShellError::CommandNotFound { .. }))
-        ));
-        assert!(resolver.next().is_none());
     }
 
     #[cfg(windows)]
