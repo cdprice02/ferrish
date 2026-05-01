@@ -37,8 +37,8 @@ pub struct ResolvedStage {
 ///
 /// Generic over any upstream stage iterator `I`. Resolves each
 /// [`UnresolvedStage`] to a [`ResolvedStage`] on demand. Errors from
-/// parsing or resolution are forwarded as `Err` items; the consumer is
-/// responsible for stopping on the first error.
+/// parsing or resolution are forwarded as `Err` items; the iterator
+/// yields `None` once the upstream parser is exhausted.
 pub struct Resolver<I> {
     inner: I,
 }

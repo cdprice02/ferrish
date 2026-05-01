@@ -65,8 +65,8 @@ fn collect_logical_input(
         };
 
         // Scan new bytes into the quote-state tracker — O(n) for this line only,
-        // not the full accumulation. Semantics mirror LexerState::scan_bytes;
-        // see lexer.rs for the escape and quote rules.
+        // not the full accumulation. See LexerState::scan_bytes in lexer.rs for
+        // the escape and quote rules.
         lex_state.scan_bytes(&line);
         lex_state.scan_bytes(b"\n");
 

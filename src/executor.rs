@@ -337,7 +337,7 @@ fn execute_pipeline_multi(
                     first_error = Some(e);
                 }
             }
-            Err(_) => {}
+            Err(_) => {} // first-error-wins: subsequent stage errors are discarded
         }
     }
 

@@ -33,6 +33,11 @@ impl fmt::Display for QuoteKind {
 pub struct LexerState {
     /// The quote that is currently open, if any.
     pub open_quote: Option<QuoteKind>,
+    /// Set when `scan_bytes` ends with a `\` inside a double-quoted string.
+    /// On the next call the first byte is checked: if it is `"` or `\`, both
+    /// bytes form an escape and the byte is skipped; otherwise the `\` was
+    /// literal and the byte is processed normally.
+    pending_dq_backslash: bool,
 }
 
 impl LexerState {
@@ -51,11 +56,12 @@ impl LexerState {
     /// Update quote state by scanning `bytes` without building tokens.
     ///
     /// Processes each byte and updates `open_quote` to reflect quote opens and
-    /// closes. May be called repeatedly on successive chunks; state accumulates
-    /// across calls, making it O(n) for new bytes only.
+    /// closes. May be called repeatedly on successive chunks; callers are
+    /// responsible for passing only new bytes on each call rather than the full
+    /// accumulated buffer.
     ///
-    /// Escape and quote semantics mirror the `Lexer` state machine in
-    /// `Iterator::next`. Keep both in sync when extending the grammar.
+    /// Escape and quote semantics mirror the `Lexer` iterator in `lexer.rs`.
+    /// Keep both in sync when extending the grammar.
     pub fn scan_bytes(&mut self, bytes: &[u8]) {
         let mut i = 0;
         while i < bytes.len() {
@@ -67,14 +73,25 @@ impl LexerState {
                     i += 1;
                 }
                 Some(QuoteKind::Double) => {
-                    // \" and \\ are escapes; skip both bytes so the second byte
-                    // does not incorrectly close or open a quote.
-                    if bytes[i] == b'\\'
-                        && i + 1 < bytes.len()
-                        && matches!(bytes[i + 1], b'"' | b'\\')
-                    {
-                        i += 2;
-                        continue;
+                    // Consume a backslash deferred from the previous chunk boundary.
+                    if self.pending_dq_backslash {
+                        self.pending_dq_backslash = false;
+                        if matches!(bytes[i], b'"' | b'\\') {
+                            i += 1; // skip the escaped byte
+                            continue;
+                        }
+                        // \ was not an escape — fall through to process bytes[i] normally.
+                    }
+                    if bytes[i] == b'\\' {
+                        if i + 1 < bytes.len() && matches!(bytes[i + 1], b'"' | b'\\') {
+                            i += 2;
+                            continue;
+                        } else if i + 1 == bytes.len() {
+                            // Chunk ends on \; defer the escape check to the next call.
+                            self.pending_dq_backslash = true;
+                            i += 1;
+                            continue;
+                        }
                     }
                     if bytes[i] == b'"' {
                         self.open_quote = None;
@@ -528,6 +545,27 @@ mod tests {
         let tokens = lex_raw(b"  echo");
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].span.offset(), 2);
+    }
+
+    #[test]
+    fn scan_bytes_dq_escape_at_chunk_boundary() {
+        // "hello\" split across two chunks — the \" escape must be honoured even
+        // though \ and " arrive in separate scan_bytes calls.
+        let mut state = LexerState::default();
+        state.scan_bytes(b"\"hello\\"); // opens double quote, ends mid-escape
+        assert!(state.needs_continuation());
+        state.scan_bytes(b"\"world\""); // \" consumed as escape, final " closes
+        assert!(!state.needs_continuation());
+    }
+
+    #[test]
+    fn scan_bytes_dq_non_escape_at_chunk_boundary() {
+        // \ followed by a non-escapable char (x) across a boundary — \ is literal.
+        let mut state = LexerState::default();
+        state.scan_bytes(b"\"hello\\");
+        assert!(state.needs_continuation());
+        state.scan_bytes(b"xworld\""); // x is not escapable; " closes the quote
+        assert!(!state.needs_continuation());
     }
 
     #[test]
