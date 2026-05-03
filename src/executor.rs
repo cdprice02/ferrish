@@ -10,7 +10,7 @@ use crate::{
     exit::ExitCode,
     fs,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
-    resolver::{self, ResolvedPipeline},
+    resolver::{self, ResolvedStage},
     CommandKind,
 };
 
@@ -203,7 +203,7 @@ pub fn execute(
     }
 }
 
-/// Execute a [`ResolvedPipeline`] (one or more `|`-connected commands).
+/// Execute a resolved pipeline (one or more `|`-connected commands).
 ///
 /// A single-stage pipeline delegates to [`execute`]. A multi-stage pipeline
 /// creates N-1 OS-level inter-stage pipes, launches all N stages concurrently,
@@ -213,21 +213,35 @@ pub fn execute(
 ///
 /// Returns `Ok(Some(code))` when the last stage requests shell exit, `Ok(None)` otherwise.
 pub fn execute_pipeline(
-    pipeline: ResolvedPipeline,
+    stages: impl Iterator<Item = ShellResult<ResolvedStage>>,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
-    if pipeline.stages.len() == 1 {
-        let stage = pipeline.stages.into_iter().next().unwrap();
+    let mut iter = stages.peekable();
+    let first = match iter.next() {
+        None => return Ok(None),
+        Some(Err(e)) => return Err(e),
+        Some(Ok(s)) => s,
+    };
+    if iter.peek().is_none() {
         return execute(
-            stage.command.kind,
-            stage.args,
+            first.command.kind,
+            first.args,
             ctx,
-            stage.stdout_redirect,
-            stage.stderr_redirect,
+            first.stdout_redirect,
+            first.stderr_redirect,
         );
     }
+    let mut stages_vec = vec![first];
+    for stage in iter {
+        stages_vec.push(stage?);
+    }
+    execute_pipeline_multi(stages_vec, ctx)
+}
 
-    let stages = pipeline.stages;
+fn execute_pipeline_multi(
+    stages: Vec<ResolvedStage>,
+    ctx: &mut ShellCtx,
+) -> ShellResult<Option<ExitCode>> {
     let n = stages.len();
 
     let pipe_pairs: std::io::Result<Vec<_>> = (0..n - 1).map(|_| std::io::pipe()).collect();
@@ -323,7 +337,7 @@ pub fn execute_pipeline(
                     first_error = Some(e);
                 }
             }
-            Err(_) => {}
+            Err(_) => {} // first-error-wins: subsequent stage errors are discarded
         }
     }
 

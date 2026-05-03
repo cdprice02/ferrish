@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use bytes::Bytes;
 use miette::{MietteError, MietteSpanContents, SourceCode, SourceSpan, SpanContents};
 
@@ -108,6 +110,14 @@ impl Input {
     /// The original bytes as received, including all whitespace.
     pub fn raw_bytes(&self) -> &[u8] {
         &self.raw
+    }
+
+    /// A zero-copy slice of the raw buffer over the given byte range.
+    ///
+    /// Used by the lexer to emit token content without heap allocation for
+    /// unescaped tokens. The range must be a valid sub-range of `raw`.
+    pub fn raw_slice(&self, range: Range<usize>) -> Bytes {
+        self.raw.slice(range)
     }
 
     /// A named miette source suitable for embedding in diagnostic variants via
