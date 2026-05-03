@@ -1,0 +1,25 @@
+name: mutants
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC nightly
+  workflow_dispatch:
+
+jobs:
+  mutants:
+    name: mutation testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-mutants
+        run: cargo install cargo-mutants --locked
+      - name: run mutants
+        run: cargo mutants --all-features --output mutants-out
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-results
+          path: mutants-out/

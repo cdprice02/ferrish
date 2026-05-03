@@ -1,0 +1,25 @@
+---
+source: tests/diagnostics.rs
+assertion_line: 53
+info:
+  program: ferrish
+  args: []
+  env:
+    USERPROFILE: "[TMPDIR]"
+    HOME: "[TMPDIR]"
+  stdin: "echo 'hello\n"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+ferrish::parse::unclosed_quote
+
+  × unclosed single quote
+   ╭─[<input>:1:6]
+ 1 │ echo 'hello
+   ·      ┬
+   ·      ╰── quote opened here
+   ╰────
+  help: add the matching quote to close this token

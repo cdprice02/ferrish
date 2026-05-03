@@ -1,0 +1,27 @@
+---
+source: tests/diagnostics.rs
+assertion_line: 46
+info:
+  program: ferrish
+  args: []
+  env:
+    HOME: "[TMPDIR]"
+    USERPROFILE: "[TMPDIR]"
+  stdin: "cd plain.txt\n"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+ferrish::exec::command_error
+
+  × cd: not a directory: plain.txt
+  ╰─▶ ferrish::fs::not_a_directory
+      
+        × not a directory: plain.txt
+         ╭─[<input>:1:4]
+       1 │ cd plain.txt
+         ·    ────┬────
+         ·        ╰── not a directory
+         ╰────

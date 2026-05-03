@@ -1,7 +1,10 @@
-#[allow(dead_code)]
 mod common;
 
-use common::ShellHarness;
+use assert_fs::prelude::*;
+use assert_fs::TempDir;
+use predicates::prelude::*;
+
+use common::ferrish_with_home;
 
 // ============================================================================
 // PWD Tests
@@ -9,15 +12,21 @@ use common::ShellHarness;
 
 #[test]
 fn pwd_in_home_directory() {
-    ShellHarness::new().run("pwd").assert_stderr_empty();
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("pwd\n")
+        .assert()
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn pwd_after_cd_to_subdirectory() {
-    ShellHarness::new()
-        .with_dir("subdir")
-        .run("cd subdir\npwd")
-        .assert_stdout_contains("subdir");
+    let temp = TempDir::new().unwrap();
+    temp.child("subdir").create_dir_all().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cd subdir\npwd\n")
+        .assert()
+        .stdout(predicate::str::contains("subdir"));
 }
 
 // ============================================================================
@@ -26,31 +35,41 @@ fn pwd_after_cd_to_subdirectory() {
 
 #[test]
 fn echo_with_no_arguments() {
-    ShellHarness::new().run("echo").assert_stderr_empty();
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo\n")
+        .assert()
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn echo_with_single_argument() {
-    ShellHarness::new()
-        .run("echo hello")
-        .assert_stdout_contains("hello");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo hello\n")
+        .assert()
+        .stdout(predicate::str::contains("hello"));
 }
 
 #[test]
 fn echo_with_multiple_arguments() {
-    ShellHarness::new()
-        .run("echo hello world from ferrish")
-        .assert_stdout_contains("hello")
-        .assert_stdout_contains("world")
-        .assert_stdout_contains("ferrish");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo hello world from ferrish\n")
+        .assert()
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains("world"))
+        .stdout(predicate::str::contains("ferrish"));
 }
 
 #[test]
 fn echo_collapses_multiple_spaces() {
-    ShellHarness::new()
-        .run("echo   hello   world")
-        .assert_stdout_contains("hello")
-        .assert_stdout_contains("world");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo   hello   world\n")
+        .assert()
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains("world"));
 }
 
 // ============================================================================
@@ -59,23 +78,29 @@ fn echo_collapses_multiple_spaces() {
 
 #[test]
 fn echo_single_quote_preserves_spaces() {
-    ShellHarness::new()
-        .run("echo 'hello    world'")
-        .assert_stdout_contains("hello    world");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo 'hello    world'\n")
+        .assert()
+        .stdout(predicate::str::contains("hello    world"));
 }
 
 #[test]
 fn echo_single_quote_adjacent_concatenation() {
-    ShellHarness::new()
-        .run("echo 'hello''world'")
-        .assert_stdout_contains("helloworld");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo 'hello''world'\n")
+        .assert()
+        .stdout(predicate::str::contains("helloworld"));
 }
 
 #[test]
 fn echo_single_quote_mixed_adjacent_concatenation() {
-    ShellHarness::new()
-        .run("echo hello''world")
-        .assert_stdout_contains("helloworld");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo hello''world\n")
+        .assert()
+        .stdout(predicate::str::contains("helloworld"));
 }
 
 // ============================================================================
@@ -84,56 +109,80 @@ fn echo_single_quote_mixed_adjacent_concatenation() {
 
 #[test]
 fn cd_to_nonexistent_directory_shows_error() {
-    ShellHarness::new()
-        .run("cd nonexistent")
-        .assert_stderr_contains("no such file or directory");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cd nonexistent\n")
+        .assert()
+        .stderr(predicate::str::contains("no such file or directory"));
 }
 
 #[test]
 fn cd_to_file_shows_not_a_directory_error() {
-    ShellHarness::new()
-        .with_file("somefile", "")
-        .run("cd somefile")
-        .assert_stderr_contains("not a directory");
+    let temp = TempDir::new().unwrap();
+    temp.child("somefile").write_str("").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cd somefile\n")
+        .assert()
+        .stderr(predicate::str::contains("not a directory"));
 }
 
 #[test]
 fn cd_no_args_goes_to_home() {
-    ShellHarness::new().run("cd\npwd").assert_stderr_empty();
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cd\npwd\n")
+        .assert()
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn cd_tilde_goes_to_home() {
-    let out = ShellHarness::new().run("cd ~\npwd");
-    let home = out.home_dir().to_str().unwrap().to_string();
-    out.assert_stdout_contains(&home).assert_stderr_empty();
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().to_str().unwrap().to_string();
+    ferrish_with_home(&temp)
+        .write_stdin("cd ~\npwd\n")
+        .assert()
+        .stdout(predicate::str::contains(&home))
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn cd_relative_then_back() {
-    ShellHarness::new()
-        .with_dir("subdir")
-        .run("cd subdir\ncd ..\npwd\necho done")
-        .assert_stdout_contains("done")
-        .assert_stderr_empty();
+    let temp = TempDir::new().unwrap();
+    temp.child("subdir").create_dir_all().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cd subdir\ncd ..\npwd\necho done\n")
+        .assert()
+        .stdout(predicate::str::contains("done"))
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn cd_no_args_without_home_shows_error() {
-    ShellHarness::new()
-        .without_home()
-        .run("cd\necho survived")
-        .assert_stderr_contains("home directory not set")
-        .assert_stdout_contains("survived");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("HOMEDRIVE")
+        .env_remove("HOMEPATH")
+        .write_stdin("cd\necho survived\n")
+        .assert()
+        .stderr(predicate::str::contains("home directory not set"))
+        .stdout(predicate::str::contains("survived"));
 }
 
 #[test]
 fn cd_tilde_without_home_shows_error() {
-    ShellHarness::new()
-        .without_home()
-        .run("cd ~\necho survived")
-        .assert_stderr_contains("home directory not set")
-        .assert_stdout_contains("survived");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("HOMEDRIVE")
+        .env_remove("HOMEPATH")
+        .write_stdin("cd ~\necho survived\n")
+        .assert()
+        .stderr(predicate::str::contains("home directory not set"))
+        .stdout(predicate::str::contains("survived"));
 }
 
 // ============================================================================
@@ -142,40 +191,52 @@ fn cd_tilde_without_home_shows_error() {
 
 #[test]
 fn type_identifies_exit_as_builtin() {
-    ShellHarness::new()
-        .run("type exit")
-        .assert_stdout_contains("builtin");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("type exit\n")
+        .assert()
+        .stdout(predicate::str::contains("builtin"));
 }
 
 #[test]
 fn type_identifies_echo_as_builtin() {
-    ShellHarness::new()
-        .run("type echo")
-        .assert_stdout_contains("echo")
-        .assert_stdout_contains("builtin");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("type echo\n")
+        .assert()
+        .stdout(predicate::str::contains("echo"))
+        .stdout(predicate::str::contains("builtin"));
 }
 
 #[test]
 fn type_nonexistent_command_reports_not_found_on_stderr() {
-    ShellHarness::new()
-        .run("type definitely_does_not_exist_123")
-        .assert_stderr_contains("not found")
-        .assert_stdout_not_contains("not found");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("type definitely_does_not_exist_123\n")
+        .assert()
+        .stderr(predicate::str::contains("not found"))
+        .stdout(predicate::str::contains("not found").not());
 }
 
 #[test]
 fn type_with_no_args_reports_missing_operand() {
-    ShellHarness::new()
-        .run("type\necho survived")
-        .assert_stderr_contains("missing operand")
-        .assert_stdout_contains("survived");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("type\necho survived\n")
+        .assert()
+        .stderr(predicate::str::contains("missing operand"))
+        .stdout(predicate::str::contains("survived"));
 }
 
 #[cfg(unix)]
 #[test]
 fn type_system_executable_shows_path() {
-    let out = ShellHarness::new().run("type sh");
-    let stdout = out.stdout();
+    let temp = TempDir::new().unwrap();
+    let output = ferrish_with_home(&temp)
+        .write_stdin("type sh\n")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("sh is"), "got: {stdout}");
     assert!(stdout.contains('/'), "expected a path, got: {stdout}");
 }
@@ -186,16 +247,20 @@ fn type_system_executable_shows_path() {
 
 #[test]
 fn exit_command_closes_shell() {
-    ShellHarness::new()
-        .run("echo before\nexit")
-        .assert_stdout_contains("before");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo before\nexit\n")
+        .assert()
+        .stdout(predicate::str::contains("before"));
 }
 
 #[test]
 fn multiple_sequential_commands_work() {
-    ShellHarness::new()
-        .run("echo first\necho second\necho third")
-        .assert_stdout_contains("first")
-        .assert_stdout_contains("second")
-        .assert_stdout_contains("third");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo first\necho second\necho third\n")
+        .assert()
+        .stdout(predicate::str::contains("first"))
+        .stdout(predicate::str::contains("second"))
+        .stdout(predicate::str::contains("third"));
 }

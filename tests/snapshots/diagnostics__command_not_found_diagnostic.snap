@@ -1,0 +1,24 @@
+---
+source: tests/diagnostics.rs
+assertion_line: 22
+info:
+  program: ferrish
+  args: []
+  env:
+    USERPROFILE: "[TMPDIR]"
+    HOME: "[TMPDIR]"
+  stdin: "foobar arg1\n"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+ferrish::command_not_found
+
+  × foobar: command not found
+   ╭─[<input>:1:1]
+ 1 │ foobar arg1
+   · ───┬──
+   ·    ╰── command not found
+   ╰────

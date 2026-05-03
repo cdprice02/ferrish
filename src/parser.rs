@@ -272,6 +272,7 @@ fn classify_redirect(arg: &Arg) -> Option<(bool, RedirectMode)> {
 mod tests {
     use super::*;
     use crate::lexer::QuoteKind;
+    use proptest::prelude::*;
 
     fn parse_raw(raw: &[u8]) -> Result<Vec<UnresolvedStage>, ShellError> {
         let input = Input::new(raw);
@@ -884,5 +885,69 @@ mod tests {
             err.to_string().contains("|"),
             "expected `|` in error message, got: {err}"
         );
+    }
+
+    // --- Property tests ---
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = parse_raw(&bytes);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn quoted_token_never_classified_as_redirect(
+            body in "[^'\"\\\\\\n]{0,20}"
+        ) {
+            for quoted in [format!("echo '{}'", body), format!("echo \"{}\"", body)] {
+                let stages = parse_raw(quoted.as_bytes());
+                if let Ok(stages) = stages {
+                    for stage in stages {
+                        prop_assert!(stage.stdout_redirect.is_none(),
+                            "quoted token produced a stdout redirect in: {:?}", quoted);
+                        prop_assert!(stage.stderr_redirect.is_none(),
+                            "quoted token produced a stderr redirect in: {:?}", quoted);
+                    }
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn clean_args_produce_no_redirects(
+            cmd in "[a-zA-Z][a-zA-Z0-9_]{0,10}",
+            args in proptest::collection::vec("[a-zA-Z0-9_]{1,10}", 0..5)
+        ) {
+            let input = if args.is_empty() {
+                cmd.clone()
+            } else {
+                format!("{} {}", cmd, args.join(" "))
+            };
+            if let Ok(stages) = parse_raw(input.as_bytes()) {
+                for stage in stages {
+                    prop_assert!(stage.stdout_redirect.is_none());
+                    prop_assert!(stage.stderr_redirect.is_none());
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn unclosed_quote_implies_needs_continuation(
+            input in proptest::collection::vec(0x20u8..=0x7eu8, 0..64)
+        ) {
+            use crate::{error::ShellError, lexer};
+            if matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. })) {
+                prop_assert!(
+                    lexer::needs_continuation(&input),
+                    "UnclosedQuote but needs_continuation=false for: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+        }
     }
 }

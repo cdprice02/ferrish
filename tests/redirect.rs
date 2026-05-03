@@ -1,7 +1,10 @@
-#[allow(dead_code)]
 mod common;
 
-use common::ShellHarness;
+use assert_fs::prelude::*;
+use assert_fs::TempDir;
+use predicates::prelude::*;
+
+use common::ferrish_with_home;
 
 // ============================================================================
 // Stdout redirection (> and 1>)
@@ -9,59 +12,82 @@ use common::ShellHarness;
 
 #[test]
 fn redirect_stdout_creates_file() {
-    let out = ShellHarness::new().run("echo hello > out.txt");
-    out.assert_stdout_not_contains("hello");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo hello > out.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("hello").not());
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "hello\n");
 }
 
 #[test]
 fn redirect_1gt_is_equivalent_to_gt() {
-    let out = ShellHarness::new().run("echo world 1> out.txt");
-    out.assert_stdout_not_contains("world");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo world 1> out.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("world").not());
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "world\n");
 }
 
 #[test]
 fn redirect_overwrites_existing_file() {
-    let out = ShellHarness::new()
-        .with_file("existing.txt", "old content\n")
-        .run("echo new content > existing.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("existing.txt")).expect("existing.txt");
+    let temp = TempDir::new().unwrap();
+    temp.child("existing.txt")
+        .write_str("old content\n")
+        .unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo new content > existing.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("existing.txt")).expect("existing.txt");
     assert_eq!(contents, "new content\n");
 }
 
 #[test]
 fn redirect_multi_word_echo_writes_single_line() {
-    let out = ShellHarness::new().run("echo foo bar baz > words.txt");
-    out.assert_stdout_not_contains("foo");
-    let contents = std::fs::read_to_string(out.home_dir().join("words.txt")).expect("words.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo foo bar baz > words.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("foo").not());
+    let contents = std::fs::read_to_string(temp.path().join("words.txt")).expect("words.txt");
     assert_eq!(contents, "foo bar baz\n");
 }
 
 #[test]
 fn no_redirect_goes_to_stdout() {
-    ShellHarness::new().run("echo visible").assert_stdout_contains("visible");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo visible\n")
+        .assert()
+        .stdout(predicate::str::contains("visible"));
 }
 
 #[cfg(unix)]
 #[test]
 fn redirect_external_executable_stdout_goes_to_file() {
-    let out = ShellHarness::new()
-        .with_file("input.txt", "extout\n")
-        .run("cat input.txt > out.txt");
-    out.assert_stdout_not_contains("extout");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    temp.child("input.txt").write_str("extout\n").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cat input.txt > out.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("extout").not());
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "extout\n");
 }
 
 #[test]
 fn redirect_does_not_persist_to_next_command() {
-    let out = ShellHarness::new().run("echo first > first.txt\necho second");
-    out.assert_stdout_contains("second")
-        .assert_stdout_not_contains("first");
-    let contents = std::fs::read_to_string(out.home_dir().join("first.txt")).expect("first.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo first > first.txt\necho second\n")
+        .assert()
+        .stdout(predicate::str::contains("second"))
+        .stdout(predicate::str::contains("first").not());
+    let contents = std::fs::read_to_string(temp.path().join("first.txt")).expect("first.txt");
     assert_eq!(contents, "first\n");
 }
 
@@ -71,38 +97,56 @@ fn redirect_does_not_persist_to_next_command() {
 
 #[test]
 fn append_redirect_creates_file_when_absent() {
-    let out = ShellHarness::new().run("echo line1 >> out.txt");
-    out.assert_stdout_not_contains("line1");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo line1 >> out.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("line1").not());
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "line1\n");
 }
 
 #[test]
 fn append_redirect_preserves_existing_content() {
-    let out = ShellHarness::new()
-        .with_file("out.txt", "existing\n")
-        .run("echo appended >> out.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    temp.child("out.txt").write_str("existing\n").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo appended >> out.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "existing\nappended\n");
 }
 
 #[test]
 fn append_redirect_two_commands_accumulate() {
-    let out = ShellHarness::new().run("echo first >> acc.txt\necho second >> acc.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("acc.txt")).expect("acc.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo first >> acc.txt\necho second >> acc.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("acc.txt")).expect("acc.txt");
     assert_eq!(contents, "first\nsecond\n");
 }
 
 #[test]
 fn truncate_redirect_after_append_overwrites() {
-    let out = ShellHarness::new().run("echo appended >> out.txt\necho truncated > out.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("out.txt")).expect("out.txt");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo appended >> out.txt\necho truncated > out.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "truncated\n");
 }
 
 #[test]
 fn append_redirect_trailing_operator_kept_as_arg() {
-    ShellHarness::new().run("echo >>").assert_stdout_contains(">>");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo >>\n")
+        .assert()
+        .stdout(predicate::str::contains(">>"));
 }
 
 // ============================================================================
@@ -111,37 +155,61 @@ fn append_redirect_trailing_operator_kept_as_arg() {
 
 #[test]
 fn stderr_redirect_creates_file() {
-    let out = ShellHarness::new().run("exit notanumber 2> err.txt");
-    out.assert_stderr_not_contains("numeric argument required");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.contains("numeric argument required"), "got: {contents}");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("exit notanumber 2> err.txt\n")
+        .assert()
+        .stderr(predicate::str::contains("numeric argument required").not());
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.contains("numeric argument required"),
+        "got: {contents}"
+    );
 }
 
 #[test]
 fn stderr_redirect_stdout_still_goes_to_terminal() {
-    let out = ShellHarness::new().run("echo visible 2> err.txt");
-    out.assert_stdout_contains("visible");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.is_empty(), "stderr file should be empty, got: {contents}");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo visible 2> err.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("visible"));
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.is_empty(),
+        "stderr file should be empty, got: {contents}"
+    );
 }
 
 #[test]
 fn stderr_redirect_overwrites_existing_file() {
-    let out = ShellHarness::new()
-        .with_file("err.txt", "old content\n")
-        .run("exit notanumber 2> err.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
+    let temp = TempDir::new().unwrap();
+    temp.child("err.txt").write_str("old content\n").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("exit notanumber 2> err.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(!contents.contains("old content"), "should have overwritten");
-    assert!(contents.contains("numeric argument required"), "got: {contents}");
+    assert!(
+        contents.contains("numeric argument required"),
+        "got: {contents}"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn stderr_redirect_does_not_affect_subsequent_stdout() {
-    let out = ShellHarness::new().run("cat /nonexistent 2> err.txt\necho after");
-    out.assert_stdout_contains("after");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(!contents.is_empty(), "cat's stderr should have been captured");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cat /nonexistent 2> err.txt\necho after\n")
+        .assert()
+        .stdout(predicate::str::contains("after"));
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        !contents.is_empty(),
+        "cat's stderr should have been captured"
+    );
 }
 
 // ============================================================================
@@ -150,43 +218,76 @@ fn stderr_redirect_does_not_affect_subsequent_stdout() {
 
 #[test]
 fn stderr_append_redirect_creates_file_when_absent() {
-    let out = ShellHarness::new().run("exit notanumber 2>> err.txt");
-    out.assert_stderr_not_contains("numeric argument required");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.contains("numeric argument required"), "got: {contents}");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("exit notanumber 2>> err.txt\n")
+        .assert()
+        .stderr(predicate::str::contains("numeric argument required").not());
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.contains("numeric argument required"),
+        "got: {contents}"
+    );
 }
 
 #[test]
 fn stderr_append_redirect_preserves_existing_content() {
-    let out = ShellHarness::new()
-        .with_file("err.txt", "existing\n")
-        .run("exit notanumber 2>> err.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.starts_with("existing\n"), "original content gone: {contents}");
-    assert!(contents.contains("numeric argument required"), "appended error missing: {contents}");
+    let temp = TempDir::new().unwrap();
+    temp.child("err.txt").write_str("existing\n").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("exit notanumber 2>> err.txt\n")
+        .output()
+        .unwrap();
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.starts_with("existing\n"),
+        "original content gone: {contents}"
+    );
+    assert!(
+        contents.contains("numeric argument required"),
+        "appended error missing: {contents}"
+    );
 }
 
 #[test]
 fn stderr_append_redirect_stdout_still_goes_to_terminal() {
-    let out = ShellHarness::new().run("echo visible 2>> err.txt");
-    out.assert_stdout_contains("visible");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.is_empty(), "stderr file should be empty, got: {contents}");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo visible 2>> err.txt\n")
+        .assert()
+        .stdout(predicate::str::contains("visible"));
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.is_empty(),
+        "stderr file should be empty, got: {contents}"
+    );
 }
 
 #[test]
 fn stderr_append_redirect_trailing_operator_kept_as_arg() {
-    ShellHarness::new().run("echo 2>>").assert_stdout_contains("2>>");
+    let temp = TempDir::new().unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("echo 2>>\n")
+        .assert()
+        .stdout(predicate::str::contains("2>>"));
 }
 
 #[cfg(unix)]
 #[test]
 fn stderr_append_redirect_external_executable_appends_to_file() {
-    let out = ShellHarness::new()
-        .with_file("err.txt", "existing\n")
-        .run("cat /nonexistent 2>> err.txt");
-    let contents = std::fs::read_to_string(out.home_dir().join("err.txt")).expect("err.txt");
-    assert!(contents.starts_with("existing\n"), "original content gone: {contents}");
-    assert!(contents.contains("/nonexistent"), "cat's stderr not captured: {contents}");
-    out.assert_stderr_not_contains("/nonexistent");
+    let temp = TempDir::new().unwrap();
+    temp.child("err.txt").write_str("existing\n").unwrap();
+    ferrish_with_home(&temp)
+        .write_stdin("cat /nonexistent 2>> err.txt\n")
+        .assert()
+        .stderr(predicate::str::contains("/nonexistent").not());
+    let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
+    assert!(
+        contents.starts_with("existing\n"),
+        "original content gone: {contents}"
+    );
+    assert!(
+        contents.contains("/nonexistent"),
+        "cat's stderr not captured: {contents}"
+    );
 }
