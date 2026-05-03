@@ -11,7 +11,7 @@ pub struct Cli {
     pub script: Option<PathBuf>,
 
     /// Execute a command string then exit.
-    #[arg(short = 'c', value_name = "COMMAND")]
+    #[arg(short = 'c', value_name = "COMMAND", conflicts_with = "script")]
     pub command: Option<String>,
 }
 
@@ -42,6 +42,12 @@ mod tests {
         let cli = Cli::try_parse_from(["ferrish", "-c", "echo hello"]).unwrap();
         assert_eq!(cli.command.as_deref(), Some("echo hello"));
         assert!(cli.script.is_none());
+    }
+
+    #[test]
+    fn script_and_command_flag_conflict() {
+        let err = Cli::try_parse_from(["ferrish", "script.sh", "-c", "echo hi"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

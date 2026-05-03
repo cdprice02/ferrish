@@ -126,8 +126,7 @@ impl Shell {
             }
 
             let raw = input.raw_bytes();
-            let entry = String::from_utf8_lossy(raw.strip_suffix(b"\n").unwrap_or(raw));
-            reader.add_history(entry.as_ref());
+            reader.add_history(raw.strip_suffix(b"\n").unwrap_or(raw));
 
             if let Some(exit_code) = self.step(input, &mut err)? {
                 return Ok(exit_code);

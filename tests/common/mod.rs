@@ -57,16 +57,21 @@ impl ShellHarness {
     /// [`with_file`](Self::with_file) to pre-create the script before calling
     /// this method.
     pub fn run_file(self, path: &str) -> ShellOutput {
-        self.spawn(Some(path), "")
+        self.spawn(Some(path), &[], "")
     }
 
     /// Spawn ferrish, feed `script` as stdin (lines separated by `\n`), and
     /// capture stdout/stderr/exit code. The process exits cleanly on stdin EOF.
     pub fn run(self, script: &str) -> ShellOutput {
-        self.spawn(None, script)
+        self.spawn(None, &[], script)
     }
 
-    fn spawn(self, file_arg: Option<&str>, stdin_script: &str) -> ShellOutput {
+    /// Spawn ferrish with `-c <cmd>` (command-string mode).
+    pub fn run_command(self, cmd: &str) -> ShellOutput {
+        self.spawn(None, &["-c", cmd], "")
+    }
+
+    fn spawn(self, file_arg: Option<&str>, raw_args: &[&str], stdin_script: &str) -> ShellOutput {
         // Canonicalize to the long path form; on Windows tempfile may return
         // short 8.3 paths, but the OS resolves cwd to the long form in `pwd`.
         let home = canonicalize_path(self.temp_dir.path().to_path_buf())
@@ -91,6 +96,9 @@ impl ShellHarness {
 
         if let Some(arg) = file_arg {
             cmd.arg(home.join(arg));
+        }
+        for arg in raw_args {
+            cmd.arg(arg);
         }
 
         if self.no_home {

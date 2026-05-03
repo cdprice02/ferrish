@@ -5,23 +5,18 @@ use common::ShellHarness;
 // --- ferrish -c <command> ---
 
 #[test]
-fn command_flag_executes_and_exits() {
+fn command_flag_echo() {
     ShellHarness::new()
-        .run("ferrish -c 'echo hello'")
-        // use the harness's own stdin path; test the flag via a script instead
+        .run_command("echo hello")
+        .assert_stdout_contains("hello")
         .assert_exit_success();
 }
 
 #[test]
-fn command_flag_echo() {
-    // Invoke the binary directly via ShellHarness::run using -c
-    // ShellHarness::run pipes stdin; for -c we use run_file with a wrapper script.
-    // Easier: nest a shell invocation via echo | ferrish and test run_file separately.
+fn command_flag_exit_code_propagates() {
     ShellHarness::new()
-        .with_file("cmd.sh", "echo hello\n")
-        .run_file("cmd.sh")
-        .assert_stdout_contains("hello")
-        .assert_exit_success();
+        .run_command("exit 7")
+        .assert_exit_code(7);
 }
 
 // --- ferrish <script> ---

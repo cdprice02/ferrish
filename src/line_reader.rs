@@ -23,7 +23,10 @@ pub trait LineReader {
     fn read_line(&mut self, prompt: &str) -> miette::Result<LineInput>;
 
     /// Record a completed logical command in history. No-op by default.
-    fn add_history(&mut self, _entry: &str) {}
+    ///
+    /// `entry` is the raw command bytes with the trailing newline stripped.
+    /// Implementations cast to whatever type their backing store requires.
+    fn add_history(&mut self, _entry: &[u8]) {}
 }
 
 /// Interactive line reader backed by rustyline.
@@ -53,8 +56,9 @@ impl LineReader for InteractiveReader {
         }
     }
 
-    fn add_history(&mut self, entry: &str) {
-        let _ = self.editor.add_history_entry(entry);
+    fn add_history(&mut self, entry: &[u8]) {
+        let s = String::from_utf8_lossy(entry);
+        let _ = self.editor.add_history_entry(s.as_ref());
     }
 }
 
