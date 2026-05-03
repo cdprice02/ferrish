@@ -211,7 +211,7 @@ impl<'a> Iterator for Lexer<'a> {
             if self.i >= self.buffer.len() {
                 self.done = true;
 
-                if let Some(ref kind) = self.state.open_quote.clone() {
+                if let Some(kind) = &self.state.open_quote {
                     return Some(Err(ShellError::UnclosedQuote {
                         style: kind.clone(),
                         span: SourceSpan::from((self.abs_start + self.quote_start_i, 1)),
