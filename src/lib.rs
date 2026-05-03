@@ -23,6 +23,8 @@ pub mod fs;
 pub mod input;
 /// Lexer: tokenizes raw input into [`lexer::Token`] values.
 pub mod lexer;
+/// Input reader trait and implementations for interactive and script modes.
+pub mod line_reader;
 /// Input parsing: groups tokens into an unresolved pipeline AST.
 pub mod parser;
 /// I/O redirection descriptors produced by the parser.
@@ -39,14 +41,32 @@ pub use shell::Shell;
 
 /// Run the ferrish shell with standard I/O.
 ///
+/// Dispatches based on CLI arguments:
+/// - `ferrish <script>` — executes the script file non-interactively
+/// - `ferrish -c <cmd>` — executes the command string then exits
+/// - `ferrish` — starts the interactive REPL (rustyline handles non-TTY input)
+///
 /// # Example
 /// ```no_run
 /// let result = ferrish::run();
 /// ```
 pub fn run() -> miette::Result<exit::ExitCode> {
     use clap::Parser;
-    match cli::Cli::try_parse() {
-        Ok(_) => Shell::builder().build().run_interactive(),
+    use miette::IntoDiagnostic as _;
+
+    let cli = match cli::Cli::try_parse() {
+        Ok(c) => c,
         Err(e) => e.exit(),
+    };
+
+    let mut shell = Shell::builder().build();
+
+    if let Some(path) = cli.script {
+        let file = std::fs::File::open(&path).into_diagnostic()?;
+        shell.run_script(&mut std::io::BufReader::new(file))
+    } else if let Some(cmd) = cli.command {
+        shell.run_script(&mut std::io::Cursor::new(cmd.into_bytes()))
+    } else {
+        shell.run_interactive()
     }
 }
