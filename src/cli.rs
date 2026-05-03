@@ -1,9 +1,19 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 
 /// An early-stage shell implementation in Rust.
 #[derive(Parser, Debug)]
 #[command(name = "ferrish", version, about)]
-pub struct Cli {}
+pub struct Cli {
+    /// Script file to execute non-interactively.
+    #[arg(value_name = "SCRIPT")]
+    pub script: Option<PathBuf>,
+
+    /// Execute a command string then exit.
+    #[arg(short = 'c', value_name = "COMMAND")]
+    pub command: Option<String>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -18,6 +28,20 @@ mod tests {
     #[test]
     fn bare_invocation_succeeds() {
         assert!(Cli::try_parse_from(["ferrish"]).is_ok());
+    }
+
+    #[test]
+    fn script_arg_parses() {
+        let cli = Cli::try_parse_from(["ferrish", "script.sh"]).unwrap();
+        assert_eq!(cli.script, Some(PathBuf::from("script.sh")));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn command_flag_parses() {
+        let cli = Cli::try_parse_from(["ferrish", "-c", "echo hello"]).unwrap();
+        assert_eq!(cli.command.as_deref(), Some("echo hello"));
+        assert!(cli.script.is_none());
     }
 
     #[test]

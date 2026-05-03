@@ -2,32 +2,21 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use miette::IntoDiagnostic as _;
-use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
 
 use crate::{
     ctx::{ShellConfig, ShellCtx},
     executor,
     exit::ExitCode,
     input::Input,
-    lexer, parser, resolver,
+    lexer,
+    line_reader::{InteractiveReader, LineInput, LineReader, ScriptReader},
+    parser, resolver,
 };
 
-/// A single physical line returned by a line-reading source.
-enum LineInput {
-    /// A line of bytes, trailing `\n` stripped — both sources normalize to this.
-    Line(Vec<u8>),
-    /// End of input (EOF or Ctrl+D).
-    Eof,
-    /// User interrupted the current input (Ctrl+C); only rustyline yields this.
-    Interrupted,
-}
-
-/// Collect one logical input unit from `next_line`, handling quote and
+/// Collect one logical input unit from `reader`, handling quote and
 /// backslash-newline continuation.
 ///
-/// `next_line` is called with the prompt to display before each physical line.
-/// The first call receives `prompt`; subsequent continuation reads receive
+/// The first physical line read uses `prompt`; continuation reads use
 /// `cont_prompt`. Quote continuation is checked before backslash continuation
 /// so that a `\` inside a quoted string is literal and does not trigger line
 /// joining.
@@ -35,7 +24,7 @@ enum LineInput {
 /// Returns `None` on EOF before any input is accumulated, or `Some(Input)`
 /// once a complete logical line is available.
 fn collect_logical_input(
-    mut next_line: impl FnMut(&str) -> miette::Result<LineInput>,
+    reader: &mut dyn LineReader,
     prompt: &str,
     cont_prompt: &str,
 ) -> miette::Result<Option<Input>> {
@@ -45,7 +34,7 @@ fn collect_logical_input(
     loop {
         let current = if acc.is_empty() { prompt } else { cont_prompt };
 
-        let line = match next_line(current)? {
+        let line = match reader.read_line(current)? {
             LineInput::Eof => {
                 if !acc.is_empty() && !acc.ends_with(b"\n") {
                     acc.push(b'\n');
@@ -105,60 +94,26 @@ impl Shell {
     /// (Ctrl+D). Ctrl+C abandons the current input and returns to the prompt.
     /// Diagnostics go to the process's real stderr.
     pub fn run_interactive(&mut self) -> miette::Result<ExitCode> {
-        let mut editor = DefaultEditor::new().into_diagnostic()?;
-        let mut err = std::io::stderr();
-        loop {
-            let input = match collect_logical_input(
-                |prompt| match editor.readline(prompt) {
-                    Ok(l) => Ok(LineInput::Line(l.into_bytes())),
-                    Err(ReadlineError::Eof) => Ok(LineInput::Eof),
-                    Err(ReadlineError::Interrupted) => Ok(LineInput::Interrupted),
-                    Err(e) => Err(e).into_diagnostic(),
-                },
-                &self.ctx.config.prompt,
-                &self.ctx.config.continuation_prompt,
-            )? {
-                None => return Ok(ExitCode::SUCCESS),
-                Some(input) => input,
-            };
-
-            if input.is_effectively_empty() {
-                continue;
-            }
-
-            // Add the complete logical command to history (strip trailing newline).
-            let raw = input.raw_bytes();
-            let entry = String::from_utf8_lossy(raw.strip_suffix(b"\n").unwrap_or(raw));
-            let _ = editor.add_history_entry(entry.as_ref());
-
-            if let Some(exit_code) = self.step(input, &mut err)? {
-                return Ok(exit_code);
-            }
-        }
+        let mut reader = InteractiveReader::new()?;
+        self.run_loop(&mut reader)
     }
 
     /// Run the shell loop from a [`BufRead`] source.
     ///
     /// This is the entry point for script / batch mode; interactive use goes
-    /// through [`Shell::run_interactive`]. Prompts and diagnostics go to the
-    /// process's real stdout/stderr.
-    pub fn run_script(&mut self, reader: &mut dyn BufRead) -> miette::Result<ExitCode> {
-        let mut out = std::io::stdout();
+    /// through [`Shell::run_interactive`]. Prompts are suppressed; diagnostics
+    /// go to the process's real stderr.
+    pub fn run_script(&mut self, source: &mut dyn BufRead) -> miette::Result<ExitCode> {
+        let mut reader = ScriptReader::new(source);
+        self.run_loop(&mut reader)
+    }
+
+    /// Shared REPL loop driven by any [`LineReader`].
+    fn run_loop(&mut self, reader: &mut dyn LineReader) -> miette::Result<ExitCode> {
         let mut err = std::io::stderr();
         loop {
             let input = match collect_logical_input(
-                |prompt| {
-                    out.write_all(prompt.as_bytes()).into_diagnostic()?;
-                    out.flush().into_diagnostic()?;
-                    let mut line = Vec::new();
-                    if reader.read_until(b'\n', &mut line).into_diagnostic()? == 0 {
-                        return Ok(LineInput::Eof);
-                    }
-                    if line.ends_with(b"\n") {
-                        line.pop();
-                    }
-                    Ok(LineInput::Line(line))
-                },
+                reader,
                 &self.ctx.config.prompt,
                 &self.ctx.config.continuation_prompt,
             )? {
@@ -169,6 +124,10 @@ impl Shell {
             if input.is_effectively_empty() {
                 continue;
             }
+
+            let raw = input.raw_bytes();
+            let entry = String::from_utf8_lossy(raw.strip_suffix(b"\n").unwrap_or(raw));
+            reader.add_history(entry.as_ref());
 
             if let Some(exit_code) = self.step(input, &mut err)? {
                 return Ok(exit_code);
