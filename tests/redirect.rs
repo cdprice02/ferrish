@@ -4,7 +4,7 @@ use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
 
-use common::ferrish_with_home;
+use common::ferrish_cmd;
 
 // ============================================================================
 // Stdout redirection (> and 1>)
@@ -13,7 +13,8 @@ use common::ferrish_with_home;
 #[test]
 fn redirect_stdout_creates_file() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo hello > out.txt\n")
         .assert()
         .stdout(predicate::str::contains("hello").not());
@@ -24,7 +25,8 @@ fn redirect_stdout_creates_file() {
 #[test]
 fn redirect_1gt_is_equivalent_to_gt() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo world 1> out.txt\n")
         .assert()
         .stdout(predicate::str::contains("world").not());
@@ -38,7 +40,8 @@ fn redirect_overwrites_existing_file() {
     temp.child("existing.txt")
         .write_str("old content\n")
         .unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo new content > existing.txt\n")
         .output()
         .unwrap();
@@ -49,7 +52,8 @@ fn redirect_overwrites_existing_file() {
 #[test]
 fn redirect_multi_word_echo_writes_single_line() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo foo bar baz > words.txt\n")
         .assert()
         .stdout(predicate::str::contains("foo").not());
@@ -60,7 +64,8 @@ fn redirect_multi_word_echo_writes_single_line() {
 #[test]
 fn no_redirect_goes_to_stdout() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo visible\n")
         .assert()
         .stdout(predicate::str::contains("visible"));
@@ -71,7 +76,8 @@ fn no_redirect_goes_to_stdout() {
 fn redirect_external_executable_stdout_goes_to_file() {
     let temp = TempDir::new().unwrap();
     temp.child("input.txt").write_str("extout\n").unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("cat input.txt > out.txt\n")
         .assert()
         .stdout(predicate::str::contains("extout").not());
@@ -82,7 +88,8 @@ fn redirect_external_executable_stdout_goes_to_file() {
 #[test]
 fn redirect_does_not_persist_to_next_command() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo first > first.txt\necho second\n")
         .assert()
         .stdout(predicate::str::contains("second"))
@@ -98,7 +105,8 @@ fn redirect_does_not_persist_to_next_command() {
 #[test]
 fn append_redirect_creates_file_when_absent() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo line1 >> out.txt\n")
         .assert()
         .stdout(predicate::str::contains("line1").not());
@@ -110,7 +118,8 @@ fn append_redirect_creates_file_when_absent() {
 fn append_redirect_preserves_existing_content() {
     let temp = TempDir::new().unwrap();
     temp.child("out.txt").write_str("existing\n").unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo appended >> out.txt\n")
         .output()
         .unwrap();
@@ -121,7 +130,8 @@ fn append_redirect_preserves_existing_content() {
 #[test]
 fn append_redirect_two_commands_accumulate() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo first >> acc.txt\necho second >> acc.txt\n")
         .output()
         .unwrap();
@@ -132,7 +142,8 @@ fn append_redirect_two_commands_accumulate() {
 #[test]
 fn truncate_redirect_after_append_overwrites() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo appended >> out.txt\necho truncated > out.txt\n")
         .output()
         .unwrap();
@@ -143,7 +154,8 @@ fn truncate_redirect_after_append_overwrites() {
 #[test]
 fn append_redirect_trailing_operator_kept_as_arg() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo >>\n")
         .assert()
         .stdout(predicate::str::contains(">>"));
@@ -156,7 +168,8 @@ fn append_redirect_trailing_operator_kept_as_arg() {
 #[test]
 fn stderr_redirect_creates_file() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("exit notanumber 2> err.txt\n")
         .assert()
         .stderr(predicate::str::contains("numeric argument required").not());
@@ -170,7 +183,8 @@ fn stderr_redirect_creates_file() {
 #[test]
 fn stderr_redirect_stdout_still_goes_to_terminal() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo visible 2> err.txt\n")
         .assert()
         .stdout(predicate::str::contains("visible"));
@@ -185,7 +199,8 @@ fn stderr_redirect_stdout_still_goes_to_terminal() {
 fn stderr_redirect_overwrites_existing_file() {
     let temp = TempDir::new().unwrap();
     temp.child("err.txt").write_str("old content\n").unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("exit notanumber 2> err.txt\n")
         .output()
         .unwrap();
@@ -201,7 +216,8 @@ fn stderr_redirect_overwrites_existing_file() {
 #[test]
 fn stderr_redirect_does_not_affect_subsequent_stdout() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("cat /nonexistent 2> err.txt\necho after\n")
         .assert()
         .stdout(predicate::str::contains("after"));
@@ -219,7 +235,8 @@ fn stderr_redirect_does_not_affect_subsequent_stdout() {
 #[test]
 fn stderr_append_redirect_creates_file_when_absent() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("exit notanumber 2>> err.txt\n")
         .assert()
         .stderr(predicate::str::contains("numeric argument required").not());
@@ -234,7 +251,8 @@ fn stderr_append_redirect_creates_file_when_absent() {
 fn stderr_append_redirect_preserves_existing_content() {
     let temp = TempDir::new().unwrap();
     temp.child("err.txt").write_str("existing\n").unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("exit notanumber 2>> err.txt\n")
         .output()
         .unwrap();
@@ -252,7 +270,8 @@ fn stderr_append_redirect_preserves_existing_content() {
 #[test]
 fn stderr_append_redirect_stdout_still_goes_to_terminal() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo visible 2>> err.txt\n")
         .assert()
         .stdout(predicate::str::contains("visible"));
@@ -266,7 +285,8 @@ fn stderr_append_redirect_stdout_still_goes_to_terminal() {
 #[test]
 fn stderr_append_redirect_trailing_operator_kept_as_arg() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo 2>>\n")
         .assert()
         .stdout(predicate::str::contains("2>>"));
@@ -277,7 +297,8 @@ fn stderr_append_redirect_trailing_operator_kept_as_arg() {
 fn stderr_append_redirect_external_executable_appends_to_file() {
     let temp = TempDir::new().unwrap();
     temp.child("err.txt").write_str("existing\n").unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("cat /nonexistent 2>> err.txt\n")
         .assert()
         .stderr(predicate::str::contains("/nonexistent").not());

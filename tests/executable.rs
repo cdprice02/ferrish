@@ -1,14 +1,12 @@
 mod common;
 
-use assert_fs::TempDir;
 use predicates::prelude::*;
 
-use common::ferrish_with_home;
+use common::ferrish_cmd;
 
 #[test]
 fn command_not_found_reports_error() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("nonexistentcommandthatdefinitelydoesnotexist123\n")
         .output()
         .unwrap();
@@ -30,8 +28,7 @@ fn external_command_stdout_is_captured() {
     #[cfg(windows)]
     let (script, expected) = ("where cmd", "cmd");
 
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin(format!("{script}\n"))
         .assert()
         .stderr(predicate::str::is_empty())
@@ -41,8 +38,7 @@ fn external_command_stdout_is_captured() {
 #[cfg(unix)]
 #[test]
 fn external_command_stderr_is_captured() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("sh -c 'echo ferrish_stderr_test >&2'\n")
         .assert()
         .stderr(predicate::str::contains("ferrish_stderr_test"));
@@ -51,8 +47,7 @@ fn external_command_stderr_is_captured() {
 #[cfg(unix)]
 #[test]
 fn external_command_both_streams_captured() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("which sh\nsh -c 'echo ferrish_err_both >&2'\n")
         .assert()
         .stdout(predicate::str::contains("sh"))

@@ -1,14 +1,12 @@
 mod common;
 
-use assert_fs::TempDir;
 use predicates::prelude::*;
 
-use common::ferrish_with_home;
+use common::ferrish_cmd;
 
 #[test]
 fn repl_ignores_empty_lines() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("\n\necho test\n")
         .assert()
         .stdout(predicate::str::contains("test"));
@@ -16,8 +14,7 @@ fn repl_ignores_empty_lines() {
 
 #[test]
 fn whitespace_only_lines_produce_no_errors() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("   \n\t\n  \t  \necho alive\n")
         .assert()
         .stderr(predicate::str::is_empty())
@@ -27,11 +24,7 @@ fn whitespace_only_lines_produce_no_errors() {
 #[cfg(unix)]
 #[test]
 fn nonzero_exit_from_external_command_reports_error() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
-        .write_stdin("false\n")
-        .output()
-        .unwrap();
+    let output = ferrish_cmd().write_stdin("false\n").output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("exited with status") || stderr.contains("exited"),
@@ -43,8 +36,7 @@ fn nonzero_exit_from_external_command_reports_error() {
 #[cfg(unix)]
 #[test]
 fn nonfatal_error_does_not_stop_subsequent_commands() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("false\necho survived\n")
         .assert()
         .stderr(predicate::str::contains("exited"))
@@ -56,8 +48,7 @@ fn nonfatal_error_does_not_stop_subsequent_commands() {
 // absorbed into the open quote rather than running as a separate command.
 #[test]
 fn unclosed_double_quote_at_eof_reports_error() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("echo \"hello\necho inside_quote\n")
         .output()
         .unwrap();
@@ -72,8 +63,7 @@ fn unclosed_double_quote_at_eof_reports_error() {
 
 #[test]
 fn unclosed_single_quote_at_eof_reports_error() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("echo 'hello\necho inside_quote\n")
         .output()
         .unwrap();
@@ -90,8 +80,7 @@ fn unclosed_single_quote_at_eof_reports_error() {
 // command once the closing quote arrives.
 #[test]
 fn multiline_double_quoted_string_continues_until_closed() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo \"line one\nline two\"\necho done\n")
         .assert()
         .stderr(predicate::str::is_empty())
@@ -102,8 +91,7 @@ fn multiline_double_quoted_string_continues_until_closed() {
 
 #[test]
 fn multiline_single_quoted_string_continues_until_closed() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo 'line one\nline two'\necho done\n")
         .assert()
         .stderr(predicate::str::is_empty())
@@ -116,8 +104,7 @@ fn multiline_single_quoted_string_continues_until_closed() {
 // and newline from the input.
 #[test]
 fn trailing_backslash_joins_next_line() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello \\\nworld\necho done\n")
         .assert()
         .stderr(predicate::str::is_empty())
@@ -130,8 +117,7 @@ fn trailing_backslash_joins_next_line() {
 // line continuation. The quoted string should span both lines intact.
 #[test]
 fn backslash_inside_single_quote_is_not_continuation() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo 'hello \\\nworld'\necho done\n")
         .assert()
         .stderr(predicate::str::is_empty())
@@ -142,8 +128,7 @@ fn backslash_inside_single_quote_is_not_continuation() {
 
 #[test]
 fn unknown_command_error_goes_to_stderr_not_stdout() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("commandthatdoesnotexist_xyz\n")
         .output()
         .unwrap();

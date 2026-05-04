@@ -1,15 +1,15 @@
 mod common;
 
+use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
 
-use common::ferrish_with_home;
+use common::ferrish_cmd;
 
 #[cfg(unix)]
 #[test]
 fn pipeline_echo_to_cat() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello | cat\n")
         .assert()
         .stdout(predicate::str::contains("hello"));
@@ -18,8 +18,7 @@ fn pipeline_echo_to_cat() {
 #[cfg(unix)]
 #[test]
 fn pipeline_echo_to_wc_l_counts_one_line() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("echo hello | wc -l\n")
         .output()
         .unwrap();
@@ -30,8 +29,7 @@ fn pipeline_echo_to_wc_l_counts_one_line() {
 #[cfg(unix)]
 #[test]
 fn pipeline_builtin_output_piped_to_cat() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo 'piped content' | cat\n")
         .assert()
         .stdout(predicate::str::contains("piped content"));
@@ -41,7 +39,8 @@ fn pipeline_builtin_output_piped_to_cat() {
 #[test]
 fn pipeline_last_stage_redirect_to_file() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo foo | cat > out.txt\n")
         .assert()
         .stdout(predicate::str::contains("foo").not());
@@ -51,8 +50,7 @@ fn pipeline_last_stage_redirect_to_file() {
 
 #[test]
 fn pipeline_quoted_pipe_is_literal() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo 'foo | bar'\n")
         .assert()
         .stdout(predicate::str::contains("foo | bar"));
@@ -60,8 +58,7 @@ fn pipeline_quoted_pipe_is_literal() {
 
 #[test]
 fn pipeline_double_quoted_pipe_is_literal() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo \"foo | bar\"\n")
         .assert()
         .stdout(predicate::str::contains("foo | bar"));
@@ -70,8 +67,7 @@ fn pipeline_double_quoted_pipe_is_literal() {
 #[cfg(unix)]
 #[test]
 fn pipeline_pwd_piped_to_grep() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("pwd | grep /\n")
         .assert()
         .stdout(predicate::str::contains("/"));
@@ -79,8 +75,7 @@ fn pipeline_pwd_piped_to_grep() {
 
 #[test]
 fn pipeline_last_stage_exit_code_propagates() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo foo | exit 0\n")
         .assert()
         .code(0);
@@ -91,8 +86,7 @@ fn pipeline_last_stage_exit_code_propagates() {
 #[cfg(unix)]
 #[test]
 fn three_stage_pipeline_passthrough() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello | cat | cat\n")
         .assert()
         .stdout(predicate::str::contains("hello"));
@@ -101,8 +95,7 @@ fn three_stage_pipeline_passthrough() {
 #[cfg(unix)]
 #[test]
 fn four_stage_pipeline_passthrough() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello | cat | cat | cat\n")
         .assert()
         .stdout(predicate::str::contains("hello"));
@@ -111,8 +104,7 @@ fn four_stage_pipeline_passthrough() {
 #[cfg(unix)]
 #[test]
 fn three_stage_pipeline_transforms_data() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello | tr h H | cat\n")
         .assert()
         .stdout(predicate::str::contains("Hello"));
@@ -121,8 +113,7 @@ fn three_stage_pipeline_transforms_data() {
 #[cfg(unix)]
 #[test]
 fn three_stage_pipeline_echo_cat_wc_c() {
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("echo hello | cat | wc -c\n")
         .output()
         .unwrap();
@@ -138,7 +129,8 @@ fn three_stage_pipeline_echo_cat_wc_c() {
 #[test]
 fn three_stage_pipeline_with_final_redirect() {
     let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
+        .current_dir(temp.path())
         .write_stdin("echo foo | cat | cat > out.txt\n")
         .assert()
         .stdout(predicate::str::contains("foo").not());
@@ -151,8 +143,7 @@ fn three_stage_pipeline_with_final_redirect() {
 #[cfg(unix)]
 #[test]
 fn pipeline_builtin_in_middle_position() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo ignored | pwd | grep /\n")
         .assert()
         .stdout(predicate::str::contains("/"))
@@ -162,8 +153,7 @@ fn pipeline_builtin_in_middle_position() {
 #[cfg(unix)]
 #[test]
 fn pipeline_builtin_receives_piped_stdin() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo upstream | echo downstream\n")
         .assert()
         .stdout(predicate::str::contains("downstream"))
@@ -178,8 +168,7 @@ fn pipeline_first_stage_failure_surfaces_error() {
     // With concurrent execution, builtin stages run before we can observe
     // an earlier executable failure — matching POSIX bash behavior.  The
     // important invariant is that the failure is still reported.
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("false | echo should_not_run\n")
         .assert()
         .stderr(predicate::str::contains("exited with"));
@@ -188,8 +177,7 @@ fn pipeline_first_stage_failure_surfaces_error() {
 #[cfg(unix)]
 #[test]
 fn pipeline_middle_stage_failure_surfaces_error() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo a | false | echo should_not_run\n")
         .assert()
         .stderr(predicate::str::contains("exited with"));
@@ -198,8 +186,7 @@ fn pipeline_middle_stage_failure_surfaces_error() {
 #[cfg(unix)]
 #[test]
 fn pipeline_last_stage_nonzero_surfaces_error() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo ok | false\n")
         .assert()
         .stderr(predicate::str::contains("exited with status"));
@@ -208,8 +195,7 @@ fn pipeline_last_stage_nonzero_surfaces_error() {
 #[cfg(unix)]
 #[test]
 fn pipeline_all_stages_succeed_no_error() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello | cat\n")
         .assert()
         .stdout(predicate::str::contains("hello"))
@@ -220,8 +206,7 @@ fn pipeline_all_stages_succeed_no_error() {
 
 #[test]
 fn trailing_pipe_reports_error_and_continues() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo hello |\necho survived\n")
         .assert()
         .stderr(predicate::str::contains("|"))
@@ -232,8 +217,7 @@ fn trailing_pipe_reports_error_and_continues() {
 
 #[test]
 fn leading_pipe_reports_error_and_continues() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("| cat\necho survived\n")
         .assert()
         .stderr(predicate::str::contains("|"))
@@ -243,8 +227,7 @@ fn leading_pipe_reports_error_and_continues() {
 
 #[test]
 fn empty_middle_segment_reports_error_and_continues() {
-    let temp = TempDir::new().unwrap();
-    ferrish_with_home(&temp)
+    ferrish_cmd()
         .write_stdin("echo a | | cat\necho survived\n")
         .assert()
         .stderr(predicate::str::contains("|"))
@@ -263,8 +246,7 @@ fn pipeline_large_data_no_deadlock() {
     // not deadlock here, but a concurrent implementation with a misconfigured
     // drain would.  Primarily validates that the OS-level pipe model does not
     // stall under backpressure.
-    let temp = TempDir::new().unwrap();
-    let output = ferrish_with_home(&temp)
+    let output = ferrish_cmd()
         .write_stdin("yes | head -c 131072 | wc -c\n")
         .output()
         .unwrap();
@@ -283,10 +265,13 @@ fn pipeline_builtin_cd_in_middle_does_not_change_shell_cwd() {
     // (POSIX subshell semantics).  The shell's working directory must be
     // unaffected after the pipeline completes.
     let temp = TempDir::new().unwrap();
-    let home = temp.path().to_string_lossy().into_owned();
-    ferrish_with_home(&temp)
-        .write_stdin("echo x | cd / | cat\npwd\n")
+    temp.child("marker").create_dir_all().unwrap();
+    // If cd / in the pipeline affected cwd, the subsequent cd marker would
+    // fail (marker doesn't exist in /) and produce stderr.
+    ferrish_cmd()
+        .current_dir(temp.path())
+        .write_stdin("echo x | cd / | cat\ncd marker\necho ok\n")
         .assert()
-        // pwd should print the temp home dir, not /
-        .stdout(predicate::str::contains(&home));
+        .stdout(predicate::str::contains("ok"))
+        .stderr(predicate::str::is_empty());
 }
