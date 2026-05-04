@@ -47,9 +47,7 @@ Input flows through: **Shell** → **Parser** → **Executor** → **BuiltIn | E
 Two layers:
 
 1. **Unit tests** — embedded in each module via `#[cfg(test)]`
-2. **Integration tests** (`tests/`) — spawn the `ferrish` binary as a subprocess via `ShellHarness` in `tests/common/mod.rs`, feed commands via stdin, and capture stdout/stderr/exit code
-
-`ShellHarness` is the primary integration test interface. It runs in an isolated `tempfile` directory. Prefer integration tests for anything user-visible.
+2. **Integration tests** (`tests/`) — spawn the `ferrish` binary as a subprocess via `ferrish_cmd()` in `tests/common/mod.rs`; use `assert_cmd`/`assert_fs` for assertions and `insta-cmd` for snapshot tests. Prefer integration tests for anything user-visible.
 
 Note: integration tests pipe stdin to the binary (non-TTY). The interactive rustyline path (`Shell::run`) suppresses the prompt in non-TTY mode, which is correct shell behavior — tests should not assert on prompt output.
 

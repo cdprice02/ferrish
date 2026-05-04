@@ -1,12 +1,8 @@
 ---
 source: tests/diagnostics.rs
-assertion_line: 53
 info:
   program: ferrish
   args: []
-  env:
-    USERPROFILE: "[TMPDIR]"
-    HOME: "[TMPDIR]"
   stdin: "echo 'hello\n"
 ---
 success: true
