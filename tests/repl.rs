@@ -1,41 +1,48 @@
-#[allow(dead_code)]
 mod common;
 
-use common::ShellHarness;
+use predicates::prelude::*;
+
+use common::ferrish_cmd;
 
 #[test]
 fn repl_ignores_empty_lines() {
-    ShellHarness::new()
-        .run("\n\necho test")
-        .assert_stdout_contains("test");
+    ferrish_cmd()
+        .write_stdin("\n\necho test\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test"));
 }
 
 #[test]
 fn whitespace_only_lines_produce_no_errors() {
-    ShellHarness::new()
-        .run("   \n\t\n  \t  \necho alive")
-        .assert_stderr_empty()
-        .assert_stdout_contains("alive");
+    ferrish_cmd()
+        .write_stdin("   \n\t\n  \t  \necho alive\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .stdout(predicate::str::contains("alive"));
 }
 
 #[cfg(unix)]
 #[test]
 fn nonzero_exit_from_external_command_reports_error() {
-    let out = ShellHarness::new().run("false");
+    let output = ferrish_cmd().write_stdin("false\n").output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        out.stderr().contains("exited with status") || out.stderr().contains("exited"),
+        stderr.contains("exited with status") || stderr.contains("exited"),
         "expected exit status error, got: {:?}",
-        out.stderr()
+        stderr
     );
 }
 
 #[cfg(unix)]
 #[test]
 fn nonfatal_error_does_not_stop_subsequent_commands() {
-    ShellHarness::new()
-        .run("false\necho survived")
-        .assert_stderr_contains("exited")
-        .assert_stdout_contains("survived");
+    ferrish_cmd()
+        .write_stdin("false\necho survived\n")
+        .assert()
+        .stderr(predicate::str::contains("exited"))
+        .stdout(predicate::str::contains("survived"));
 }
 
 // When an unclosed quote reaches EOF without being closed, the accumulated
@@ -43,78 +50,95 @@ fn nonfatal_error_does_not_stop_subsequent_commands() {
 // absorbed into the open quote rather than running as a separate command.
 #[test]
 fn unclosed_double_quote_at_eof_reports_error() {
-    let out = ShellHarness::new().run("echo \"hello\necho inside_quote");
-    let err = out.stderr();
+    let output = ferrish_cmd()
+        .write_stdin("echo \"hello\necho inside_quote\n")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        err.contains("unclosed") && err.contains("quote"),
-        "got: {err}"
+        stderr.contains("unclosed") && stderr.contains("quote"),
+        "got: {stderr}"
     );
-    out.assert_stdout_not_contains("inside_quote");
+    assert!(!stdout.contains("inside_quote"));
 }
 
 #[test]
 fn unclosed_single_quote_at_eof_reports_error() {
-    let out = ShellHarness::new().run("echo 'hello\necho inside_quote");
-    let err = out.stderr();
+    let output = ferrish_cmd()
+        .write_stdin("echo 'hello\necho inside_quote\n")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        err.contains("unclosed") && err.contains("quote"),
-        "got: {err}"
+        stderr.contains("unclosed") && stderr.contains("quote"),
+        "got: {stderr}"
     );
-    out.assert_stdout_not_contains("inside_quote");
+    assert!(!stdout.contains("inside_quote"));
 }
 
 // A double-quoted string that spans two physical lines is accepted as a single
 // command once the closing quote arrives.
 #[test]
 fn multiline_double_quoted_string_continues_until_closed() {
-    ShellHarness::new()
-        .run("echo \"line one\nline two\"\necho done")
-        .assert_stderr_empty()
-        .assert_stdout_contains("line one")
-        .assert_stdout_contains("line two")
-        .assert_stdout_contains("done");
+    ferrish_cmd()
+        .write_stdin("echo \"line one\nline two\"\necho done\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .stdout(predicate::str::contains("line one"))
+        .stdout(predicate::str::contains("line two"))
+        .stdout(predicate::str::contains("done"));
 }
 
 #[test]
 fn multiline_single_quoted_string_continues_until_closed() {
-    ShellHarness::new()
-        .run("echo 'line one\nline two'\necho done")
-        .assert_stderr_empty()
-        .assert_stdout_contains("line one")
-        .assert_stdout_contains("line two")
-        .assert_stdout_contains("done");
+    ferrish_cmd()
+        .write_stdin("echo 'line one\nline two'\necho done\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .stdout(predicate::str::contains("line one"))
+        .stdout(predicate::str::contains("line two"))
+        .stdout(predicate::str::contains("done"));
 }
 
-// A trailing backslash joins the next physical line, removing the backslash
-// and newline from the input.
 #[test]
 fn trailing_backslash_joins_next_line() {
-    ShellHarness::new()
-        .run("echo hello \\\nworld\necho done")
-        .assert_stderr_empty()
-        .assert_stdout_contains("hello")
-        .assert_stdout_contains("world")
-        .assert_stdout_contains("done");
+    ferrish_cmd()
+        .write_stdin("echo hello \\\nworld\necho done\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains("world"))
+        .stdout(predicate::str::contains("done"));
 }
 
-// A backslash inside a single-quoted string is literal — it must not trigger
-// line continuation. The quoted string should span both lines intact.
 #[test]
 fn backslash_inside_single_quote_is_not_continuation() {
-    ShellHarness::new()
-        .run("echo 'hello \\\nworld'\necho done")
-        .assert_stderr_empty()
-        .assert_stdout_contains("hello")
-        .assert_stdout_contains("world")
-        .assert_stdout_contains("done");
+    ferrish_cmd()
+        .write_stdin("echo 'hello \\\nworld'\necho done\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .stdout(predicate::str::contains("hello"))
+        .stdout(predicate::str::contains("world"))
+        .stdout(predicate::str::contains("done"));
 }
 
 #[test]
 fn unknown_command_error_goes_to_stderr_not_stdout() {
-    let out = ShellHarness::new().run("commandthatdoesnotexist_xyz");
+    let output = ferrish_cmd()
+        .write_stdin("commandthatdoesnotexist_xyz\n")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !out.stderr().is_empty(),
+        !stderr.is_empty(),
         "expected error output on stderr for unknown command"
     );
-    out.assert_stdout_not_contains("not found");
+    assert!(!stdout.contains("not found"));
 }

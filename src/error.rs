@@ -230,6 +230,74 @@ mod tests {
     use super::*;
     use crate::input::Input;
 
+    fn render_diagnostic(err: &impl miette::Diagnostic) -> String {
+        let mut buf = String::new();
+        miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::none())
+            .render_report(&mut buf, err)
+            .unwrap();
+        buf
+    }
+
+    #[test]
+    fn command_not_found_renders_command_name() {
+        let err = ShellError::CommandNotFound {
+            name: "foobar".into(),
+            span: (0, 6).into(),
+            src: Input::new(b"foobar arg1").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("foobar"));
+    }
+
+    #[test]
+    fn command_not_found_renders_source_snippet() {
+        let err = ShellError::CommandNotFound {
+            name: "foobar".into(),
+            span: (0, 6).into(),
+            src: Input::new(b"foobar arg1").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("foobar arg1"));
+    }
+
+    #[test]
+    fn command_not_found_renders_label() {
+        let err = ShellError::CommandNotFound {
+            name: "foobar".into(),
+            span: (0, 6).into(),
+            src: Input::new(b"foobar arg1").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("command not found"));
+    }
+
+    #[test]
+    fn file_not_found_renders_path() {
+        let err = ShellError::FileNotFound {
+            name: "/nope".into(),
+            span: (3, 5).into(),
+            src: Input::new(b"cd /nope").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("/nope"));
+    }
+
+    #[test]
+    fn not_a_directory_renders_filename() {
+        let err = ShellError::NotADirectory {
+            name: "plain.txt".into(),
+            span: (3, 9).into(),
+            src: Input::new(b"cd plain.txt").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("plain.txt"));
+    }
+
+    #[test]
+    fn unclosed_quote_renders_label() {
+        let err = ShellError::UnclosedQuote {
+            style: QuoteKind::Single,
+            span: (5, 1).into(),
+            src: Input::new(b"echo 'hello").as_source(),
+        };
+        assert!(render_diagnostic(&err).contains("quote opened here"));
+    }
+
     fn dummy_src() -> InputSource {
         Input::new(b"").as_source()
     }

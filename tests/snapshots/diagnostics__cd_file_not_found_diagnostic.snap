@@ -1,0 +1,23 @@
+---
+source: tests/diagnostics.rs
+info:
+  program: ferrish
+  args: []
+  stdin: "cd /this/path/does/not/exist\n"
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+ferrish::exec::command_error
+
+  × cd: no such file or directory: /this/path/does/not/exist
+  ╰─▶ ferrish::fs::not_found
+      
+        × no such file or directory: /this/path/does/not/exist
+         ╭─[<input>:1:4]
+       1 │ cd /this/path/does/not/exist
+         ·    ────────────┬────────────
+         ·                ╰── no such file or directory
+         ╰────
