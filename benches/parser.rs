@@ -9,7 +9,7 @@ fn bench_lex_typical(c: &mut Criterion) {
     c.bench_function("lex_typical_line", |b| {
         b.iter(|| {
             let input = Input::new(black_box(TYPICAL_LINE));
-            lexer::lex(&input).for_each(drop);
+            black_box(lexer::lex(&input).count())
         });
     });
 }
@@ -18,7 +18,7 @@ fn bench_parse_typical(c: &mut Criterion) {
     c.bench_function("parse_typical_line", |b| {
         b.iter(|| {
             let input = Input::new(black_box(TYPICAL_LINE));
-            parser::parse(&input).for_each(drop);
+            black_box(parser::parse(&input).count())
         });
     });
 }
@@ -27,7 +27,7 @@ fn bench_parse_pipeline_5(c: &mut Criterion) {
     c.bench_function("parse_pipeline_5_stages", |b| {
         b.iter(|| {
             let input = Input::new(black_box(PIPELINE_5));
-            parser::parse(&input).for_each(drop);
+            black_box(parser::parse(&input).count())
         });
     });
 }

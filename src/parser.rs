@@ -903,13 +903,12 @@ mod tests {
         ) {
             for quoted in [format!("echo '{}'", body), format!("echo \"{}\"", body)] {
                 let stages = parse_raw(quoted.as_bytes());
-                if let Ok(stages) = stages {
-                    for stage in stages {
-                        prop_assert!(stage.stdout_redirect.is_none(),
-                            "quoted token produced a stdout redirect in: {:?}", quoted);
-                        prop_assert!(stage.stderr_redirect.is_none(),
-                            "quoted token produced a stderr redirect in: {:?}", quoted);
-                    }
+                prop_assert!(stages.is_ok(), "well-formed quoted input failed to parse: {:?}", quoted);
+                for stage in stages.unwrap() {
+                    prop_assert!(stage.stdout_redirect.is_none(),
+                        "quoted token produced a stdout redirect in: {:?}", quoted);
+                    prop_assert!(stage.stderr_redirect.is_none(),
+                        "quoted token produced a stderr redirect in: {:?}", quoted);
                 }
             }
         }
@@ -926,28 +925,28 @@ mod tests {
             } else {
                 format!("{} {}", cmd, args.join(" "))
             };
-            if let Ok(stages) = parse_raw(input.as_bytes()) {
-                for stage in stages {
-                    prop_assert!(stage.stdout_redirect.is_none());
-                    prop_assert!(stage.stderr_redirect.is_none());
-                }
+            let stages = parse_raw(input.as_bytes());
+            prop_assert!(stages.is_ok(), "clean identifier input failed to parse: {:?}", input);
+            for stage in stages.unwrap() {
+                prop_assert!(stage.stdout_redirect.is_none());
+                prop_assert!(stage.stderr_redirect.is_none());
             }
         }
     }
 
     proptest! {
         #[test]
-        fn unclosed_quote_implies_needs_continuation(
+        fn unclosed_quote_iff_needs_continuation(
             input in proptest::collection::vec(0x20u8..=0x7eu8, 0..64)
         ) {
             use crate::{error::ShellError, lexer};
-            if matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. })) {
-                prop_assert!(
-                    lexer::needs_continuation(&input),
-                    "UnclosedQuote but needs_continuation=false for: {:?}",
-                    String::from_utf8_lossy(&input)
-                );
-            }
+            let is_unclosed = matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. }));
+            let needs_cont = lexer::needs_continuation(&input);
+            prop_assert_eq!(
+                is_unclosed, needs_cont,
+                "UnclosedQuote and needs_continuation disagree for: {:?}",
+                String::from_utf8_lossy(&input)
+            );
         }
     }
 }

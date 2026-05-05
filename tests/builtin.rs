@@ -15,6 +15,7 @@ fn pwd_in_home_directory() {
     ferrish_cmd()
         .write_stdin("pwd\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty());
 }
 
@@ -26,6 +27,7 @@ fn pwd_after_cd_to_subdirectory() {
         .current_dir(temp.path())
         .write_stdin("cd subdir\npwd\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("subdir"));
 }
 
@@ -38,6 +40,7 @@ fn echo_with_no_arguments() {
     ferrish_cmd()
         .write_stdin("echo\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty());
 }
 
@@ -46,6 +49,7 @@ fn echo_with_single_argument() {
     ferrish_cmd()
         .write_stdin("echo hello\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("hello"));
 }
 
@@ -54,6 +58,7 @@ fn echo_with_multiple_arguments() {
     ferrish_cmd()
         .write_stdin("echo hello world from ferrish\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("hello"))
         .stdout(predicate::str::contains("world"))
         .stdout(predicate::str::contains("ferrish"));
@@ -64,6 +69,7 @@ fn echo_collapses_multiple_spaces() {
     ferrish_cmd()
         .write_stdin("echo   hello   world\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("hello"))
         .stdout(predicate::str::contains("world"));
 }
@@ -77,6 +83,7 @@ fn echo_single_quote_preserves_spaces() {
     ferrish_cmd()
         .write_stdin("echo 'hello    world'\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("hello    world"));
 }
 
@@ -85,6 +92,7 @@ fn echo_single_quote_adjacent_concatenation() {
     ferrish_cmd()
         .write_stdin("echo 'hello''world'\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("helloworld"));
 }
 
@@ -93,6 +101,7 @@ fn echo_single_quote_mixed_adjacent_concatenation() {
     ferrish_cmd()
         .write_stdin("echo hello''world\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("helloworld"));
 }
 
@@ -124,6 +133,7 @@ fn cd_no_args_goes_to_home() {
     ferrish_cmd()
         .write_stdin("cd\necho ok\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("ok"))
         .stderr(predicate::str::is_empty());
 }
@@ -133,6 +143,7 @@ fn cd_tilde_goes_to_home() {
     ferrish_cmd()
         .write_stdin("cd ~\necho ok\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("ok"))
         .stderr(predicate::str::is_empty());
 }
@@ -145,6 +156,7 @@ fn cd_relative_then_back() {
         .current_dir(temp.path())
         .write_stdin("cd subdir\ncd ..\npwd\necho done\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("done"))
         .stderr(predicate::str::is_empty());
 }
@@ -184,6 +196,7 @@ fn type_identifies_exit_as_builtin() {
     ferrish_cmd()
         .write_stdin("type exit\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("builtin"));
 }
 
@@ -192,6 +205,7 @@ fn type_identifies_echo_as_builtin() {
     ferrish_cmd()
         .write_stdin("type echo\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("echo"))
         .stdout(predicate::str::contains("builtin"));
 }
@@ -218,6 +232,11 @@ fn type_with_no_args_reports_missing_operand() {
 #[test]
 fn type_system_executable_shows_path() {
     let output = ferrish_cmd().write_stdin("type sh\n").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected success, got: {:?}",
+        output.status
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("sh is"), "got: {stdout}");
     assert!(stdout.contains('/'), "expected a path, got: {stdout}");
@@ -232,6 +251,7 @@ fn exit_command_closes_shell() {
     ferrish_cmd()
         .write_stdin("echo before\nexit\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("before"));
 }
 
@@ -240,6 +260,7 @@ fn multiple_sequential_commands_work() {
     ferrish_cmd()
         .write_stdin("echo first\necho second\necho third\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("first"))
         .stdout(predicate::str::contains("second"))
         .stdout(predicate::str::contains("third"));

@@ -9,6 +9,7 @@ fn repl_ignores_empty_lines() {
     ferrish_cmd()
         .write_stdin("\n\necho test\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("test"));
 }
 
@@ -17,6 +18,7 @@ fn whitespace_only_lines_produce_no_errors() {
     ferrish_cmd()
         .write_stdin("   \n\t\n  \t  \necho alive\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty())
         .stdout(predicate::str::contains("alive"));
 }
@@ -83,6 +85,7 @@ fn multiline_double_quoted_string_continues_until_closed() {
     ferrish_cmd()
         .write_stdin("echo \"line one\nline two\"\necho done\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty())
         .stdout(predicate::str::contains("line one"))
         .stdout(predicate::str::contains("line two"))
@@ -94,32 +97,31 @@ fn multiline_single_quoted_string_continues_until_closed() {
     ferrish_cmd()
         .write_stdin("echo 'line one\nline two'\necho done\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty())
         .stdout(predicate::str::contains("line one"))
         .stdout(predicate::str::contains("line two"))
         .stdout(predicate::str::contains("done"));
 }
 
-// A trailing backslash joins the next physical line, removing the backslash
-// and newline from the input.
 #[test]
 fn trailing_backslash_joins_next_line() {
     ferrish_cmd()
         .write_stdin("echo hello \\\nworld\necho done\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty())
         .stdout(predicate::str::contains("hello"))
         .stdout(predicate::str::contains("world"))
         .stdout(predicate::str::contains("done"));
 }
 
-// A backslash inside a single-quoted string is literal — it must not trigger
-// line continuation. The quoted string should span both lines intact.
 #[test]
 fn backslash_inside_single_quote_is_not_continuation() {
     ferrish_cmd()
         .write_stdin("echo 'hello \\\nworld'\necho done\n")
         .assert()
+        .success()
         .stderr(predicate::str::is_empty())
         .stdout(predicate::str::contains("hello"))
         .stdout(predicate::str::contains("world"))

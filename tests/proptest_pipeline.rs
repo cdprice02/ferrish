@@ -22,6 +22,8 @@ proptest! {
             .arg("-c").arg(&piped_str)
             .output().unwrap();
 
+        prop_assert!(direct.status.success(), "direct command failed for args: {:?}", args);
+        prop_assert!(piped.status.success(), "piped command failed for args: {:?}", args);
         prop_assert_eq!(direct.stdout, piped.stdout,
             "echo | cat mismatch for args: {:?}", args);
     }
@@ -38,6 +40,8 @@ proptest! {
             .write_stdin(format!("{}\n", cmd_str))
             .output().unwrap();
 
+        prop_assert!(via_c.status.success(), "-c mode failed for: {:?}", cmd_str);
+        prop_assert!(via_stdin.status.success(), "stdin mode failed for: {:?}", cmd_str);
         prop_assert_eq!(via_c.stdout, via_stdin.stdout,
             "stdout differs between -c and stdin mode for: {:?}", cmd_str);
     }
