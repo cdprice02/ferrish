@@ -17,6 +17,7 @@ fn redirect_stdout_creates_file() {
         .current_dir(temp.path())
         .write_stdin("echo hello > out.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("hello").not());
     let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "hello\n");
@@ -29,6 +30,7 @@ fn redirect_1gt_is_equivalent_to_gt() {
         .current_dir(temp.path())
         .write_stdin("echo world 1> out.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("world").not());
     let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "world\n");
@@ -56,6 +58,7 @@ fn redirect_multi_word_echo_writes_single_line() {
         .current_dir(temp.path())
         .write_stdin("echo foo bar baz > words.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("foo").not());
     let contents = std::fs::read_to_string(temp.path().join("words.txt")).expect("words.txt");
     assert_eq!(contents, "foo bar baz\n");
@@ -68,6 +71,7 @@ fn no_redirect_goes_to_stdout() {
         .current_dir(temp.path())
         .write_stdin("echo visible\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("visible"));
 }
 
@@ -80,6 +84,7 @@ fn redirect_external_executable_stdout_goes_to_file() {
         .current_dir(temp.path())
         .write_stdin("cat input.txt > out.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("extout").not());
     let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "extout\n");
@@ -92,6 +97,7 @@ fn redirect_does_not_persist_to_next_command() {
         .current_dir(temp.path())
         .write_stdin("echo first > first.txt\necho second\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("second"))
         .stdout(predicate::str::contains("first").not());
     let contents = std::fs::read_to_string(temp.path().join("first.txt")).expect("first.txt");
@@ -109,6 +115,7 @@ fn append_redirect_creates_file_when_absent() {
         .current_dir(temp.path())
         .write_stdin("echo line1 >> out.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("line1").not());
     let contents = std::fs::read_to_string(temp.path().join("out.txt")).expect("out.txt");
     assert_eq!(contents, "line1\n");
@@ -158,6 +165,7 @@ fn append_redirect_trailing_operator_kept_as_arg() {
         .current_dir(temp.path())
         .write_stdin("echo >>\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains(">>"));
 }
 
@@ -172,6 +180,7 @@ fn stderr_redirect_creates_file() {
         .current_dir(temp.path())
         .write_stdin("exit notanumber 2> err.txt\n")
         .assert()
+        .code(1)
         .stderr(predicate::str::contains("numeric argument required").not());
     let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(
@@ -187,6 +196,7 @@ fn stderr_redirect_stdout_still_goes_to_terminal() {
         .current_dir(temp.path())
         .write_stdin("echo visible 2> err.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("visible"));
     let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(
@@ -220,6 +230,7 @@ fn stderr_redirect_does_not_affect_subsequent_stdout() {
         .current_dir(temp.path())
         .write_stdin("cat /nonexistent 2> err.txt\necho after\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("after"));
     let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(
@@ -239,6 +250,7 @@ fn stderr_append_redirect_creates_file_when_absent() {
         .current_dir(temp.path())
         .write_stdin("exit notanumber 2>> err.txt\n")
         .assert()
+        .code(1)
         .stderr(predicate::str::contains("numeric argument required").not());
     let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(
@@ -274,6 +286,7 @@ fn stderr_append_redirect_stdout_still_goes_to_terminal() {
         .current_dir(temp.path())
         .write_stdin("echo visible 2>> err.txt\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("visible"));
     let contents = std::fs::read_to_string(temp.path().join("err.txt")).expect("err.txt");
     assert!(
@@ -289,6 +302,7 @@ fn stderr_append_redirect_trailing_operator_kept_as_arg() {
         .current_dir(temp.path())
         .write_stdin("echo 2>>\n")
         .assert()
+        .success()
         .stdout(predicate::str::contains("2>>"));
 }
 

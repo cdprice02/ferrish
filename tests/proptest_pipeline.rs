@@ -7,27 +7,6 @@ use proptest::test_runner::Config;
 proptest! {
     #![proptest_config(Config::with_cases(25))]
 
-    /// echo <args> | cat produces the same output as echo <args>
-    #[test]
-    fn echo_pipe_cat_passthrough(
-        args in proptest::collection::vec("[a-z0-9]{1,8}", 1..=5)
-    ) {
-        let cmd_str = format!("echo {}", args.join(" "));
-        let piped_str = format!("echo {} | cat", args.join(" "));
-
-        let direct = ferrish_cmd()
-            .arg("-c").arg(&cmd_str)
-            .output().unwrap();
-        let piped = ferrish_cmd()
-            .arg("-c").arg(&piped_str)
-            .output().unwrap();
-
-        prop_assert!(direct.status.success(), "direct command failed for args: {:?}", args);
-        prop_assert!(piped.status.success(), "piped command failed for args: {:?}", args);
-        prop_assert_eq!(direct.stdout, piped.stdout,
-            "echo | cat mismatch for args: {:?}", args);
-    }
-
     /// -c mode and stdin mode produce the same stdout for single builtin commands
     #[test]
     fn c_mode_equals_stdin_mode(word in "[a-z]{1,10}") {
@@ -51,6 +30,27 @@ proptest! {
 proptest! {
     #![proptest_config(Config::with_cases(25))]
 
+    /// echo <args> | cat produces the same output as echo <args>
+    #[test]
+    fn echo_pipe_cat_passthrough(
+        args in proptest::collection::vec("[a-z0-9]{1,8}", 1..=5)
+    ) {
+        let cmd_str = format!("echo {}", args.join(" "));
+        let piped_str = format!("echo {} | cat", args.join(" "));
+
+        let direct = ferrish_cmd()
+            .arg("-c").arg(&cmd_str)
+            .output().unwrap();
+        let piped = ferrish_cmd()
+            .arg("-c").arg(&piped_str)
+            .output().unwrap();
+
+        prop_assert!(direct.status.success(), "direct command failed for args: {:?}", args);
+        prop_assert!(piped.status.success(), "piped command failed for args: {:?}", args);
+        prop_assert_eq!(direct.stdout, piped.stdout,
+            "echo | cat mismatch for args: {:?}", args);
+    }
+
     /// Redirecting stdout to /dev/null leaves terminal stdout empty
     #[test]
     fn redirect_to_devnull_leaves_stdout_empty(word in "[a-z]{1,10}") {
@@ -58,6 +58,7 @@ proptest! {
             .arg("-c").arg(format!("echo {} > /dev/null", word))
             .output().unwrap();
 
+        prop_assert!(output.status.success(), "command failed for: {:?}", word);
         prop_assert!(output.stdout.is_empty(),
             "stdout not empty after redirect to /dev/null: {:?}", word);
     }
