@@ -937,7 +937,11 @@ mod tests {
     proptest! {
         #[test]
         fn unclosed_quote_iff_needs_continuation(
-            input in proptest::collection::vec(0x20u8..=0x7eu8, 0..64)
+            // Exclude '|' (0x7c): a leading/empty-segment pipe fires EmptyPipelineSegment
+            // before UnclosedQuote, breaking the iff relationship.
+            input in proptest::collection::vec(
+                prop_oneof![0x20u8..=0x7bu8, 0x7du8..=0x7eu8], 0..64
+            )
         ) {
             use crate::{error::ShellError, lexer};
             let is_unclosed = matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. }));
