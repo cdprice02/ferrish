@@ -23,7 +23,6 @@ fn whitespace_only_lines_produce_no_errors() {
         .stdout(predicate::str::contains("alive"));
 }
 
-#[cfg(unix)]
 #[test]
 fn nonzero_exit_from_external_command_reports_error() {
     let output = ferrish_cmd().write_stdin("false\n").output().unwrap();
@@ -35,7 +34,6 @@ fn nonzero_exit_from_external_command_reports_error() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn nonfatal_error_does_not_stop_subsequent_commands() {
     ferrish_cmd()

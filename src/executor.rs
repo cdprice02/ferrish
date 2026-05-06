@@ -376,7 +376,6 @@ fn execute_builtin(
     err: &mut dyn Write,
     ctx: &mut ShellCtx,
 ) -> ShellResult<Option<ExitCode>> {
-    let _stdin_guard = stdin; // keep read end open until builtin completes
     match builtin.name() {
         BuiltInName::Exit => {
             let code = match args.first() {
@@ -398,6 +397,9 @@ fn execute_builtin(
         BuiltInName::Echo => execute_echo(args, out)?,
         BuiltInName::Type => execute_type(args, out)?,
         BuiltInName::Pwd => execute_pwd(args, out, ctx)?,
+        BuiltInName::True => {}
+        BuiltInName::False => return Err(ShellError::BuiltInNonZeroExit(1)),
+        BuiltInName::Cat => execute_cat(args, stdin, out, err, &ctx.cwd)?,
     }
 
     Ok(None)
@@ -480,5 +482,38 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
 
 fn execute_pwd(_args: Args, out: &mut dyn Write, ctx: &ShellCtx) -> ShellResult<()> {
     writeln!(out, "{}", ctx.cwd.display())?;
+    Ok(())
+}
+
+fn execute_cat(
+    args: Args,
+    stdin: Option<PipeReader>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    cwd: &std::path::Path,
+) -> ShellResult<()> {
+    if args.is_empty() {
+        if let Some(mut reader) = stdin {
+            std::io::copy(&mut reader, out)?;
+        }
+    } else {
+        for arg in args.iter() {
+            let path_str = arg.to_string();
+            let path = std::path::Path::new(&path_str);
+            let full_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd.join(path)
+            };
+            match std::fs::File::open(&full_path) {
+                Ok(mut f) => {
+                    std::io::copy(&mut f, out)?;
+                }
+                Err(e) => {
+                    writeln!(err, "cat: {path_str}: {e}")?;
+                }
+            }
+        }
+    }
     Ok(())
 }

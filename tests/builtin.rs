@@ -242,6 +242,118 @@ fn type_system_executable_shows_path() {
     assert!(stdout.contains('/'), "expected a path, got: {stdout}");
 }
 
+#[cfg(windows)]
+#[test]
+fn type_system_executable_shows_path_windows() {
+    let output = ferrish_cmd().write_stdin("type cmd\n").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected success, got: {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("cmd is"), "got: {stdout}");
+    assert!(stdout.contains('\\'), "expected a path, got: {stdout}");
+}
+
+// ============================================================================
+// True and False builtins
+// ============================================================================
+
+#[test]
+fn true_builtin_exits_success() {
+    ferrish_cmd()
+        .write_stdin("true\necho ok\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn false_builtin_reports_error() {
+    let output = ferrish_cmd().write_stdin("false\n").output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("exited with status"),
+        "expected exit status error, got: {:?}",
+        stderr
+    );
+}
+
+#[test]
+fn false_builtin_is_nonfatal() {
+    ferrish_cmd()
+        .write_stdin("false\necho survived\n")
+        .assert()
+        .stdout(predicate::str::contains("survived"));
+}
+
+#[test]
+fn true_is_a_builtin() {
+    ferrish_cmd()
+        .write_stdin("type true\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("builtin"));
+}
+
+#[test]
+fn false_is_a_builtin() {
+    ferrish_cmd()
+        .write_stdin("type false\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("builtin"));
+}
+
+// ============================================================================
+// Cat builtin
+// ============================================================================
+
+#[test]
+fn cat_is_a_builtin() {
+    ferrish_cmd()
+        .write_stdin("type cat\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("builtin"));
+}
+
+#[test]
+fn cat_reads_file_arg() {
+    use assert_fs::prelude::*;
+    use assert_fs::TempDir;
+    let temp = TempDir::new().unwrap();
+    temp.child("hello.txt")
+        .write_str("hello from file\n")
+        .unwrap();
+    ferrish_cmd()
+        .current_dir(temp.path())
+        .write_stdin("cat hello.txt\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello from file"));
+}
+
+#[test]
+fn cat_passes_stdin_through_in_pipeline() {
+    ferrish_cmd()
+        .write_stdin("echo piped | cat\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("piped"));
+}
+
+#[test]
+fn cat_nonexistent_file_writes_error_to_stderr() {
+    ferrish_cmd()
+        .write_stdin("cat __no_such_file_xyz__\necho after\n")
+        .assert()
+        .stdout(predicate::str::contains("after"))
+        .stderr(predicate::str::contains("__no_such_file_xyz__"));
+}
+
 // ============================================================================
 // Exit and Sequential Commands
 // ============================================================================

@@ -89,6 +89,11 @@ pub enum ShellError {
     #[diagnostic(code(ferrish::exec::non_zero_exit))]
     NonZeroExit(ExitStatus),
 
+    /// A built-in command exited with a non-zero status code.
+    #[error("exited with status {0}")]
+    #[diagnostic(code(ferrish::exec::builtin_non_zero_exit))]
+    BuiltInNonZeroExit(u8),
+
     /// The shell failed to spawn or wait on the child process.
     #[error("failed to execute: {0}")]
     #[diagnostic(code(ferrish::exec::failed))]
@@ -167,6 +172,7 @@ impl PartialEq for ShellError {
                 la == ra
             }
             (Self::NonZeroExit(l0), Self::NonZeroExit(r0)) => l0 == r0,
+            (Self::BuiltInNonZeroExit(l), Self::BuiltInNonZeroExit(r)) => l == r,
             (Self::ExecutionFailed(l0), Self::ExecutionFailed(r0)) => {
                 l0.raw_os_error() == r0.raw_os_error()
             }
