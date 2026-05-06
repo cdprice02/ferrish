@@ -69,12 +69,11 @@ Compatibility may be explored selectively, but only when it aligns with ferrishâ
 Install [pre-commit](https://pre-commit.com) once, then activate the hooks:
 
 ```bash
-uv tool install pre-commit
-pre-commit install --hook-type pre-commit --hook-type pre-push
+uv tool install pre-commit  # or: pip install pre-commit
+pre-commit install
 ```
 
 On every `git commit`: `cargo fmt --check`, `cargo check`, and `cargo clippy` run automatically.
-On every `git push`: `cargo mutants --in-diff` runs against the diff being pushed. Bypass with `git push --no-verify` when needed.
 
 ---
 
