@@ -36,6 +36,12 @@ pub enum BuiltInName {
     Pwd,
     /// Change the current working directory.
     Cd,
+    /// Exit with status 0.
+    True,
+    /// Exit with status 1.
+    False,
+    /// Concatenate files or pass stdin to stdout.
+    Cat,
 }
 
 #[cfg(test)]
@@ -50,6 +56,9 @@ mod tests {
         assert_eq!(BuiltInName::from_str("pwd").unwrap(), BuiltInName::Pwd);
         assert_eq!(BuiltInName::from_str("cd").unwrap(), BuiltInName::Cd);
         assert_eq!(BuiltInName::from_str("type").unwrap(), BuiltInName::Type);
+        assert_eq!(BuiltInName::from_str("true").unwrap(), BuiltInName::True);
+        assert_eq!(BuiltInName::from_str("false").unwrap(), BuiltInName::False);
+        assert_eq!(BuiltInName::from_str("cat").unwrap(), BuiltInName::Cat);
     }
 
     #[test]

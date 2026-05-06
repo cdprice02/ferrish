@@ -75,9 +75,8 @@ fn no_redirect_goes_to_stdout() {
         .stdout(predicate::str::contains("visible"));
 }
 
-#[cfg(unix)]
 #[test]
-fn redirect_external_executable_stdout_goes_to_file() {
+fn redirect_builtin_stdout_goes_to_file() {
     let temp = TempDir::new().unwrap();
     temp.child("input.txt").write_str("extout\n").unwrap();
     ferrish_cmd()
@@ -222,7 +221,6 @@ fn stderr_redirect_overwrites_existing_file() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn stderr_redirect_does_not_affect_subsequent_stdout() {
     let temp = TempDir::new().unwrap();
@@ -306,9 +304,8 @@ fn stderr_append_redirect_trailing_operator_kept_as_arg() {
         .stdout(predicate::str::contains("2>>"));
 }
 
-#[cfg(unix)]
 #[test]
-fn stderr_append_redirect_external_executable_appends_to_file() {
+fn stderr_append_redirect_builtin_appends_to_file() {
     let temp = TempDir::new().unwrap();
     temp.child("err.txt").write_str("existing\n").unwrap();
     ferrish_cmd()
