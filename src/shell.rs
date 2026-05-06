@@ -88,7 +88,7 @@ impl Shell {
         ShellBuilder::default()
     }
 
-    /// Run the interactive REPL using rustyline for line editing.
+    /// Run the interactive REPL using reedline for line editing.
     ///
     /// Reads from the terminal until `exit` is called or the user signals EOF
     /// (Ctrl+D). Ctrl+C abandons the current input and returns to the prompt.
@@ -124,9 +124,6 @@ impl Shell {
             if input.is_effectively_empty() {
                 continue;
             }
-
-            let raw = input.raw_bytes();
-            reader.add_history(raw.strip_suffix(b"\n").unwrap_or(raw));
 
             if let Some(exit_code) = self.step(input, &mut err)? {
                 return Ok(exit_code);

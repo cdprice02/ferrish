@@ -44,7 +44,7 @@ pub use shell::Shell;
 /// Dispatches based on CLI arguments:
 /// - `ferrish <script>` — executes the script file non-interactively
 /// - `ferrish -c <cmd>` — executes the command string then exits
-/// - `ferrish` — starts the interactive REPL (rustyline handles non-TTY input)
+/// - `ferrish` — starts the interactive REPL (reedline handles line editing)
 ///
 /// # Example
 /// ```no_run
@@ -66,7 +66,9 @@ pub fn run() -> miette::Result<exit::ExitCode> {
         shell.run_script(&mut std::io::BufReader::new(file))
     } else if let Some(cmd) = cli.command {
         shell.run_script(&mut std::io::Cursor::new(cmd.into_bytes()))
-    } else {
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         shell.run_interactive()
+    } else {
+        shell.run_script(&mut std::io::BufReader::new(std::io::stdin()))
     }
 }

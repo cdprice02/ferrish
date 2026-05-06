@@ -1,8 +1,8 @@
+use std::borrow::Cow;
 use std::io::BufRead;
 
 use miette::IntoDiagnostic as _;
-use rustyline::DefaultEditor;
-use rustyline::error::ReadlineError;
+use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 
 /// A single physical line returned by a line-reading source.
 pub enum LineInput {
@@ -21,44 +21,69 @@ pub enum LineInput {
 pub trait LineReader {
     /// Read the next physical line, displaying `prompt` if appropriate.
     fn read_line(&mut self, prompt: &str) -> miette::Result<LineInput>;
-
-    /// Record a completed logical command in history. No-op by default.
-    ///
-    /// `entry` is the raw command bytes with the trailing newline stripped.
-    /// Implementations cast to whatever type their backing store requires.
-    fn add_history(&mut self, _entry: &[u8]) {}
 }
 
-/// Interactive line reader backed by rustyline.
+/// Bridges a `&str` prompt into reedline's [`Prompt`] trait.
+struct ShellPrompt<'a>(&'a str);
+
+impl Prompt for ShellPrompt<'_> {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed(self.0)
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("> ")
+    }
+
+    fn render_prompt_history_search_indicator(&self, _: PromptHistorySearch) -> Cow<'_, str> {
+        Cow::Borrowed("search: ")
+    }
+}
+
+/// Interactive line reader backed by reedline.
 ///
 /// Displays prompts, supports line editing and history, and yields
-/// [`LineInput::Interrupted`] on Ctrl+C.
+/// [`LineInput::Interrupted`] on Ctrl+C. History is managed internally by
+/// reedline and saved automatically on each successful line.
+///
+/// This struct is the composition point for reedline plugins — future
+/// `Highlighter`, `Completer`, and `Hinter` implementations wire in here via
+/// builder methods on [`Reedline::create`].
 pub struct InteractiveReader {
-    editor: DefaultEditor,
+    editor: Reedline,
 }
 
 impl InteractiveReader {
-    /// Create a new interactive reader backed by a rustyline editor.
+    /// Create a new interactive reader backed by a reedline editor.
     pub fn new() -> miette::Result<Self> {
-        Ok(Self {
-            editor: DefaultEditor::new().into_diagnostic()?,
-        })
+        let editor = Reedline::create();
+        // Future plugin hooks (all share the same lexer/parser as the REPL):
+        //   .with_highlighter(Box::new(ShellHighlighter))
+        //   .with_completer(Box::new(ShellCompleter))
+        //   .with_hinter(Box::new(DefaultHinter::default()))
+        Ok(Self { editor })
     }
 }
 
 impl LineReader for InteractiveReader {
     fn read_line(&mut self, prompt: &str) -> miette::Result<LineInput> {
-        match self.editor.readline(prompt) {
-            Ok(l) => Ok(LineInput::Line(l.into_bytes())),
-            Err(ReadlineError::Eof) => Ok(LineInput::Eof),
-            Err(ReadlineError::Interrupted) => Ok(LineInput::Interrupted),
-            Err(e) => Err(e).into_diagnostic(),
+        let p = ShellPrompt(prompt);
+        match self.editor.read_line(&p).into_diagnostic()? {
+            Signal::Success(s) => Ok(LineInput::Line(s.into_bytes())),
+            Signal::CtrlC => Ok(LineInput::Interrupted),
+            Signal::CtrlD => Ok(LineInput::Eof),
+            // HostCommand and ExternalBreak are not issued in the default
+            // configuration; treat them as interrupts so the REPL continues.
+            _ => Ok(LineInput::Interrupted),
         }
-    }
-
-    fn add_history(&mut self, entry: &[u8]) {
-        let s = String::from_utf8_lossy(entry);
-        let _ = self.editor.add_history_entry(s.as_ref());
     }
 }
 
