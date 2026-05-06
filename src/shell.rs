@@ -8,74 +8,9 @@ use crate::{
     executor,
     exit::ExitCode,
     input::Input,
-    lexer,
     line_reader::{InteractiveReader, LineInput, LineReader, ScriptReader},
     parser, resolver,
 };
-
-/// Collect one logical input unit from `reader`, handling quote and
-/// backslash-newline continuation.
-///
-/// The first physical line read uses `prompt`; continuation reads use
-/// `cont_prompt`. Quote continuation is checked before backslash continuation
-/// so that a `\` inside a quoted string is literal and does not trigger line
-/// joining.
-///
-/// Returns `None` on EOF before any input is accumulated, or `Some(Input)`
-/// once a complete logical line is available.
-fn collect_logical_input(
-    reader: &mut dyn LineReader,
-    prompt: &str,
-    cont_prompt: &str,
-) -> miette::Result<Option<Input>> {
-    let mut acc: Vec<u8> = Vec::new();
-    let mut lex_state = lexer::LexerState::default();
-
-    loop {
-        let current = if acc.is_empty() { prompt } else { cont_prompt };
-
-        let line = match reader.read_line(current)? {
-            LineInput::Eof => {
-                if !acc.is_empty() && !acc.ends_with(b"\n") {
-                    acc.push(b'\n');
-                }
-                return Ok(if acc.is_empty() {
-                    None
-                } else {
-                    Some(Input::from_vec(acc))
-                });
-            }
-            LineInput::Interrupted => {
-                acc.clear();
-                lex_state = lexer::LexerState::default();
-                continue;
-            }
-            LineInput::Line(l) => l,
-        };
-
-        // Scan new bytes into the quote-state tracker — O(n) for this line only,
-        // not the full accumulation. See LexerState::scan_bytes in lexer.rs for
-        // the escape and quote rules.
-        lex_state.scan_bytes(&line);
-        lex_state.scan_bytes(b"\n");
-
-        if lex_state.needs_continuation() {
-            acc.extend_from_slice(&line);
-            acc.push(b'\n');
-            continue;
-        }
-
-        // Backslash-newline: join this line to the next, stripping the `\`.
-        if line.ends_with(b"\\") {
-            acc.extend_from_slice(&line[..line.len() - 1]);
-            continue;
-        }
-
-        acc.extend_from_slice(&line);
-        acc.push(b'\n');
-        return Ok(Some(Input::from_vec(acc)));
-    }
-}
 
 /// The ferrish shell REPL.
 pub struct Shell {
@@ -94,7 +29,7 @@ impl Shell {
     /// (Ctrl+D). Ctrl+C abandons the current input and returns to the prompt.
     /// Diagnostics go to the process's real stderr.
     pub fn run_interactive(&mut self) -> miette::Result<ExitCode> {
-        let mut reader = InteractiveReader::new()?;
+        let mut reader = InteractiveReader::new(&self.ctx.config)?;
         self.run_loop(&mut reader)
     }
 
@@ -109,24 +44,24 @@ impl Shell {
     }
 
     /// Shared REPL loop driven by any [`LineReader`].
+    ///
+    /// Each call to [`LineReader::read_line`] returns a complete logical
+    /// command — accumulation and continuation are handled inside the reader.
     fn run_loop(&mut self, reader: &mut dyn LineReader) -> miette::Result<ExitCode> {
         let mut err = std::io::stderr();
         loop {
-            let input = match collect_logical_input(
-                reader,
-                &self.ctx.config.prompt,
-                &self.ctx.config.continuation_prompt,
-            )? {
-                None => return Ok(ExitCode::SUCCESS),
-                Some(input) => input,
-            };
-
-            if input.is_effectively_empty() {
-                continue;
-            }
-
-            if let Some(exit_code) = self.step(input, &mut err)? {
-                return Ok(exit_code);
+            match reader.read_line()? {
+                LineInput::Eof => return Ok(ExitCode::SUCCESS),
+                LineInput::Interrupted => continue,
+                LineInput::Line(bytes) => {
+                    let input = Input::from_vec(bytes);
+                    if input.is_effectively_empty() {
+                        continue;
+                    }
+                    if let Some(exit_code) = self.step(input, &mut err)? {
+                        return Ok(exit_code);
+                    }
+                }
             }
         }
     }

@@ -44,7 +44,7 @@ pub use shell::Shell;
 /// Dispatches based on CLI arguments:
 /// - `ferrish <script>` — executes the script file non-interactively
 /// - `ferrish -c <cmd>` — executes the command string then exits
-/// - `ferrish` — starts the interactive REPL (reedline handles line editing)
+/// - `ferrish` — interactive REPL when stdin is a terminal; reads from stdin as a script otherwise
 ///
 /// # Example
 /// ```no_run
