@@ -3,9 +3,9 @@ use std::str::FromStr;
 use is_executable::IsExecutable;
 
 use crate::arg::{Arg, Args};
+use crate::command::CommandKind;
 use crate::command::builtin::{BuiltInCommand, BuiltInName};
 use crate::command::executable::ExecutableCommand;
-use crate::command::CommandKind;
 use crate::env::get_path_dirs;
 use crate::error::{ShellError, ShellResult};
 use crate::parser::UnresolvedStage;

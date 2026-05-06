@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin;
 use insta_cmd::StdinCommand;
 
 #[allow(dead_code)]

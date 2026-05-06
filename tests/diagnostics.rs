@@ -1,7 +1,7 @@
 mod common;
 
-use assert_fs::prelude::*;
 use assert_fs::TempDir;
+use assert_fs::prelude::*;
 use insta_cmd::assert_cmd_snapshot;
 
 use common::snapshot_cmd;

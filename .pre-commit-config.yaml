@@ -1,0 +1,24 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        pass_filenames: false
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check
+        language: system
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+      - id: cargo-mutants-diff
+        name: cargo mutants --in-diff
+        entry: cargo mutants --in-diff
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

@@ -4,7 +4,7 @@ use miette::SourceSpan;
 use crate::arg::{Arg, Args};
 use crate::error::ShellError;
 use crate::input::{Input, InputSource};
-use crate::lexer::{lex, Lexer, Token, TokenKind};
+use crate::lexer::{Lexer, Token, TokenKind, lex};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
 use std::iter::Peekable;
 
