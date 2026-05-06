@@ -104,8 +104,7 @@ fn four_stage_pipeline_passthrough() {
 }
 
 #[test]
-fn three_stage_pipeline_transforms_data() {
-    // Was: echo hello | tr h H | cat (unix only); tests 3-stage pipe data flow
+fn three_stage_pipeline_data_flow() {
     ferrish_cmd()
         .write_stdin("echo hello | cat | cat\n")
         .assert()

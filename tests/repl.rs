@@ -24,7 +24,7 @@ fn whitespace_only_lines_produce_no_errors() {
 }
 
 #[test]
-fn nonzero_exit_from_external_command_reports_error() {
+fn nonzero_exit_from_builtin_reports_error() {
     let output = ferrish_cmd().write_stdin("false\n").output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

@@ -493,6 +493,9 @@ fn execute_cat(
     cwd: &std::path::Path,
 ) -> ShellResult<()> {
     if args.is_empty() {
+        // `stdin` is None when cat is not connected to an upstream pipeline stage.
+        // In that case the shell's own stdin (the script reader) owns the fd, so
+        // reading it would consume subsequent commands. No-op is correct here.
         if let Some(mut reader) = stdin {
             std::io::copy(&mut reader, out)?;
         }
