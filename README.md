@@ -64,6 +64,19 @@ Compatibility may be explored selectively, but only when it aligns with ferrishâ
 
 ---
 
+## Development
+
+Install [pre-commit](https://pre-commit.com) once, then activate the hooks:
+
+```bash
+uv tool install pre-commit  # or: pip install pre-commit
+pre-commit install
+```
+
+On every `git commit`: `cargo fmt --check`, `cargo check`, and `cargo clippy` run automatically.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for branch conventions, PR workflow, test requirements, and project principles.

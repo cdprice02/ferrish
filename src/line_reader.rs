@@ -1,8 +1,8 @@
 use std::io::BufRead;
 
 use miette::IntoDiagnostic as _;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 /// A single physical line returned by a line-reading source.
 pub enum LineInput {

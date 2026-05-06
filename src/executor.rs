@@ -3,6 +3,7 @@ use std::process::{Child, Stdio};
 use std::thread::{self, JoinHandle};
 
 use crate::{
+    CommandKind,
     arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
     ctx::ShellCtx,
@@ -11,7 +12,6 @@ use crate::{
     fs,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
     resolver::{self, ResolvedStage},
-    CommandKind,
 };
 
 /// Open a redirect target file according to its [`RedirectMode`].
@@ -471,7 +471,7 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
                 name: arg.to_string(),
                 span: arg.span(),
                 src: arg.src(),
-            })
+            });
         }
     }
 
