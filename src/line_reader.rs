@@ -174,6 +174,9 @@ impl LineReader for ScriptReader<'_> {
             if line.ends_with(b"\n") {
                 line.pop();
             }
+            if line.ends_with(b"\r") {
+                line.pop();
+            }
 
             lex_state.scan_bytes(&line);
             lex_state.scan_bytes(b"\n");
@@ -214,4 +217,113 @@ fn join_backslash_newlines(bytes: Vec<u8>) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use reedline::ValidationResult;
+
+    use super::*;
+
+    // --- ShellValidator ---
+
+    #[test]
+    fn validator_complete_for_simple_command() {
+        assert!(matches!(
+            ShellValidator.validate("echo hello"),
+            ValidationResult::Complete
+        ));
+    }
+
+    #[test]
+    fn validator_incomplete_for_unclosed_single_quote() {
+        assert!(matches!(
+            ShellValidator.validate("echo 'hello"),
+            ValidationResult::Incomplete
+        ));
+    }
+
+    #[test]
+    fn validator_incomplete_for_unclosed_double_quote() {
+        assert!(matches!(
+            ShellValidator.validate("echo \"hello"),
+            ValidationResult::Incomplete
+        ));
+    }
+
+    #[test]
+    fn validator_complete_after_multiline_single_quote() {
+        assert!(matches!(
+            ShellValidator.validate("echo 'hello\nworld'"),
+            ValidationResult::Complete
+        ));
+    }
+
+    #[test]
+    fn validator_incomplete_for_trailing_backslash() {
+        assert!(matches!(
+            ShellValidator.validate("echo foo\\"),
+            ValidationResult::Incomplete
+        ));
+    }
+
+    #[test]
+    fn validator_complete_after_backslash_continuation() {
+        assert!(matches!(
+            ShellValidator.validate("echo foo\\\nbar"),
+            ValidationResult::Complete
+        ));
+    }
+
+    #[test]
+    fn validator_incomplete_trailing_backslash_with_trailing_spaces() {
+        // trim_ascii_end strips trailing spaces before the backslash check so that
+        // trailing whitespace after `\` doesn't mask a continuation.
+        assert!(matches!(
+            ShellValidator.validate("echo foo\\   "),
+            ValidationResult::Incomplete
+        ));
+    }
+
+    // --- join_backslash_newlines ---
+
+    #[test]
+    fn join_removes_backslash_newline_pair() {
+        assert_eq!(
+            join_backslash_newlines(b"echo foo\\\nbar\n".to_vec()),
+            b"echo foobar\n"
+        );
+    }
+
+    #[test]
+    fn join_no_op_without_continuation() {
+        assert_eq!(
+            join_backslash_newlines(b"echo hello\n".to_vec()),
+            b"echo hello\n"
+        );
+    }
+
+    #[test]
+    fn join_multiple_continuations() {
+        assert_eq!(
+            join_backslash_newlines(b"echo a\\\nb\\\nc\n".to_vec()),
+            b"echo abc\n"
+        );
+    }
+
+    #[test]
+    fn join_preserves_backslash_not_before_newline() {
+        assert_eq!(
+            join_backslash_newlines(b"echo foo\\bar\n".to_vec()),
+            b"echo foo\\bar\n"
+        );
+    }
+
+    #[test]
+    fn join_preserves_trailing_backslash_at_end_of_buffer() {
+        assert_eq!(
+            join_backslash_newlines(b"echo foo\\".to_vec()),
+            b"echo foo\\"
+        );
+    }
 }
