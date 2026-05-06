@@ -322,8 +322,8 @@ fn cat_is_a_builtin() {
 
 #[test]
 fn cat_reads_file_arg() {
-    use assert_fs::prelude::*;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     let temp = TempDir::new().unwrap();
     temp.child("hello.txt")
         .write_str("hello from file\n")
