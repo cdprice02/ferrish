@@ -125,11 +125,14 @@ impl ShellBuilder {
     /// Build the [`Shell`].
     pub fn build(self) -> Shell {
         let base = ShellCtx::from_env();
-        let ctx = ShellCtx::with_config(
-            self.home_dir.or(base.home_dir),
-            self.cwd.unwrap_or(base.cwd),
-            self.config.unwrap_or_default(),
-        );
+        let home = self.home_dir.or(base.home_dir);
+        let mut config = self.config.unwrap_or_default();
+        if config.history_path.is_none()
+            && let Some(ref h) = home
+        {
+            config.history_path = Some(h.join(".ferrish_history"));
+        }
+        let ctx = ShellCtx::with_config(home, self.cwd.unwrap_or(base.cwd), config);
         Shell { ctx }
     }
 }
@@ -165,5 +168,31 @@ mod tests {
             .with_prompt("OVERRIDE> ".to_string())
             .build();
         assert_eq!(shell.ctx.config.prompt, "OVERRIDE> ");
+    }
+
+    #[test]
+    fn build_derives_history_path_from_home_dir() {
+        use std::path::PathBuf;
+        let home = PathBuf::from("/tmp/test-home");
+        let shell = Shell::builder().with_home_dir(home.clone()).build();
+        assert_eq!(
+            shell.ctx.config.history_path,
+            Some(home.join(".ferrish_history"))
+        );
+    }
+
+    #[test]
+    fn explicit_history_path_not_overridden() {
+        use std::path::PathBuf;
+        let custom = PathBuf::from("/tmp/my_history");
+        let config = ShellConfig {
+            history_path: Some(custom.clone()),
+            ..Default::default()
+        };
+        let shell = Shell::builder()
+            .with_home_dir(PathBuf::from("/tmp/home"))
+            .with_config(config)
+            .build();
+        assert_eq!(shell.ctx.config.history_path, Some(custom));
     }
 }

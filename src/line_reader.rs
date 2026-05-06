@@ -3,7 +3,8 @@ use std::io::BufRead;
 
 use miette::IntoDiagnostic as _;
 use reedline::{
-    Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal, ValidationResult, Validator,
+    FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal,
+    ValidationResult, Validator,
 };
 
 use crate::ctx::ShellConfig;
@@ -107,7 +108,12 @@ pub struct InteractiveReader {
 impl InteractiveReader {
     /// Create a new interactive reader using prompts and config from `config`.
     pub fn new(config: &ShellConfig) -> miette::Result<Self> {
-        let editor = Reedline::create().with_validator(Box::new(ShellValidator));
+        let mut editor = Reedline::create().with_validator(Box::new(ShellValidator));
+        if let Some(ref path) = config.history_path {
+            let history =
+                FileBackedHistory::with_file(config.max_history, path.clone()).into_diagnostic()?;
+            editor = editor.with_history(Box::new(history));
+        }
         // Future plugin hooks (all share the same lexer/parser as the REPL):
         //   .with_highlighter(Box::new(ShellHighlighter))
         //   .with_completer(Box::new(ShellCompleter))
