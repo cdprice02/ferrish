@@ -18,7 +18,7 @@ repos:
         pass_filenames: false
       - id: cargo-mutants-diff
         name: cargo mutants --in-diff
-        entry: cargo mutants --in-diff
+        entry: bash -c 'git diff origin/main...HEAD > /tmp/ferrish-push.diff && cargo mutants --in-diff /tmp/ferrish-push.diff'
         language: system
         pass_filenames: false
         stages: [pre-push]
