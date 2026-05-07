@@ -115,6 +115,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_derives_history_path_from_home() {
+        let shell = Shell::new();
+        if shell.ctx.home_dir.is_some() {
+            let hp = shell
+                .ctx
+                .config
+                .history_path
+                .expect("history_path should be set");
+            assert_eq!(hp.file_name().unwrap(), ".ferrish_history");
+        }
+    }
+
+    #[test]
     fn with_config_sets_prompt() {
         let config = ShellConfig {
             prompt: "CFG> ".to_string(),
