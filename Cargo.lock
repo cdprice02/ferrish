@@ -542,6 +542,7 @@ dependencies = [
  "predicates",
  "proptest",
  "reedline",
+ "shlex",
  "soft-canonicalize",
  "strum",
  "tempfile",

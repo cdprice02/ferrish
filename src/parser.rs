@@ -189,9 +189,7 @@ fn tokens_to_arg(group: Vec<Token>) -> Arg {
     let mut combined: Vec<u8> = Vec::new();
     for token in &group {
         let content = match &token.kind {
-            TokenKind::Word(b) | TokenKind::SingleQuoted(b) | TokenKind::DoubleQuoted(b) => {
-                b.as_ref()
-            }
+            TokenKind::Word(b) => b.as_ref(),
             TokenKind::Pipe => unreachable!("pipe tokens are stripped before grouping"),
         };
         combined.extend_from_slice(content);
@@ -255,8 +253,13 @@ fn extract_redirects(
 }
 
 /// Return the redirect class for `arg` if it is a redirect operator, else `None`.
+///
+/// A redirect operator must be fully unquoted: `span.len() == bytes.len()` means
+/// no quote characters or backslash escapes inflated the raw extent. Quoted
+/// lookalikes such as `'>'` or `1'>'` have a larger raw span and are passed
+/// through as literal arguments.
 fn classify_redirect(arg: &Arg) -> Option<(bool, RedirectMode)> {
-    if arg.tokens.len() != 1 || !matches!(arg.tokens[0].kind, TokenKind::Word(_)) {
+    if arg.span.len() != arg.bytes.len() {
         return None;
     }
     match arg.bytes.as_ref() {
@@ -487,38 +490,37 @@ mod tests {
     }
 
     #[test]
-    fn test_single_quoted_arg_has_single_quoted_token() {
+    fn test_single_quoted_arg_is_word_token() {
+        // shlex strips quotes; all tokens are Word variants regardless of quoting style.
         let stage = parse_single(b"echo 'hello world'");
         let arg = &stage.args[0];
         assert_eq!(arg.tokens.len(), 1);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::SingleQuoted(_)));
+        assert!(matches!(arg.tokens[0].kind, TokenKind::Word(_)));
     }
 
     #[test]
-    fn test_double_quoted_arg_has_double_quoted_token() {
+    fn test_double_quoted_arg_is_word_token() {
         let stage = parse_single(b"echo \"hello world\"");
         let arg = &stage.args[0];
         assert_eq!(arg.tokens.len(), 1);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::DoubleQuoted(_)));
+        assert!(matches!(arg.tokens[0].kind, TokenKind::Word(_)));
     }
 
     #[test]
-    fn test_mixed_arg_has_multiple_tokens() {
+    fn test_mixed_arg_is_single_word_token() {
+        // shlex merges pre"mid"post into a single word.
         let stage = parse_single(b"echo pre\"mid\"post");
         let arg = &stage.args[0];
-        assert_eq!(arg.tokens.len(), 3);
+        assert_eq!(arg.tokens.len(), 1);
         assert!(matches!(arg.tokens[0].kind, TokenKind::Word(_)));
-        assert!(matches!(arg.tokens[1].kind, TokenKind::DoubleQuoted(_)));
-        assert!(matches!(arg.tokens[2].kind, TokenKind::Word(_)));
     }
 
     #[test]
     fn test_mixed_quoted_operator_not_a_redirect() {
-        // 1'>' has two tokens (Word + SingleQuoted) so it is never a redirect.
+        // 1'>' raw span (4 bytes) > content length (2 bytes), so not a redirect.
         let stage = parse_single(b"echo 1'>'");
         assert!(stage.stdout_redirect.is_none());
         assert_eq!(stage.args[0].as_bytes(), b"1>");
-        assert_eq!(stage.args[0].tokens.len(), 2);
     }
 
     // --- Unclosed quote error tests ---
