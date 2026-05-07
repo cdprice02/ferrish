@@ -59,7 +59,7 @@ pub fn run() -> miette::Result<exit::ExitCode> {
         Err(e) => e.exit(),
     };
 
-    let mut shell = Shell::builder().build();
+    let mut shell = Shell::new();
 
     if let Some(path) = cli.script {
         let file = std::fs::File::open(&path).into_diagnostic()?;

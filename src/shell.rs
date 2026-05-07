@@ -1,5 +1,4 @@
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 
 use miette::IntoDiagnostic as _;
 
@@ -17,10 +16,34 @@ pub struct Shell {
     ctx: ShellCtx,
 }
 
+impl Default for Shell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Shell {
-    /// Create a shell builder.
-    pub fn builder() -> ShellBuilder {
-        ShellBuilder::default()
+    /// Create a shell initialized from the current process environment.
+    ///
+    /// Sets `history_path` to `~/.ferrish_history` when the home directory is
+    /// available; leaves it `None` otherwise.
+    pub fn new() -> Self {
+        let ctx = ShellCtx::from_env();
+        let config = ShellConfig {
+            history_path: ctx.home_dir.as_deref().map(|h| h.join(".ferrish_history")),
+            ..ctx.config
+        };
+        Shell {
+            ctx: ShellCtx::with_config(ctx.home_dir, ctx.cwd, config),
+        }
+    }
+
+    /// Create a shell with a custom configuration; env supplies home dir and cwd.
+    pub fn with_config(config: ShellConfig) -> Self {
+        let base = ShellCtx::from_env();
+        Shell {
+            ctx: ShellCtx::with_config(base.home_dir, base.cwd, config),
+        }
     }
 
     /// Run the interactive REPL using reedline for line editing.
@@ -87,65 +110,9 @@ impl Shell {
     }
 }
 
-/// Builder for constructing a [`Shell`] with custom configuration.
-#[derive(Default)]
-pub struct ShellBuilder {
-    home_dir: Option<PathBuf>,
-    cwd: Option<PathBuf>,
-    config: Option<ShellConfig>,
-}
-
-impl ShellBuilder {
-    /// Set an explicit home directory (overrides env HOME / USERPROFILE).
-    pub fn with_home_dir(mut self, path: PathBuf) -> Self {
-        self.home_dir = Some(path);
-        self
-    }
-
-    /// Set an explicit initial working directory (overrides process CWD).
-    pub fn with_cwd(mut self, path: PathBuf) -> Self {
-        self.cwd = Some(path);
-        self
-    }
-
-    /// Override the shell configuration.
-    pub fn with_config(mut self, config: ShellConfig) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Override only the prompt string.
-    pub fn with_prompt(mut self, prompt: String) -> Self {
-        let mut config = self.config.unwrap_or_default();
-        config.prompt = prompt;
-        self.config = Some(config);
-        self
-    }
-
-    /// Build the [`Shell`].
-    pub fn build(self) -> Shell {
-        let base = ShellCtx::from_env();
-        let home = self.home_dir.or(base.home_dir);
-        let mut config = self.config.unwrap_or_default();
-        if config.history_path.is_none()
-            && let Some(ref h) = home
-        {
-            config.history_path = Some(h.join(".ferrish_history"));
-        }
-        let ctx = ShellCtx::with_config(home, self.cwd.unwrap_or(base.cwd), config);
-        Shell { ctx }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn with_prompt_sets_prompt_string() {
-        let shell = Shell::builder().with_prompt("TEST> ".to_string()).build();
-        assert_eq!(shell.ctx.config.prompt, "TEST> ");
-    }
 
     #[test]
     fn with_config_sets_prompt() {
@@ -153,46 +120,17 @@ mod tests {
             prompt: "CFG> ".to_string(),
             ..Default::default()
         };
-        let shell = Shell::builder().with_config(config).build();
+        let shell = Shell::with_config(config);
         assert_eq!(shell.ctx.config.prompt, "CFG> ");
     }
 
     #[test]
-    fn with_prompt_overrides_with_config_prompt() {
+    fn with_config_sets_continuation_prompt() {
         let config = ShellConfig {
-            prompt: "CONFIG> ".to_string(),
+            continuation_prompt: "... ".to_string(),
             ..Default::default()
         };
-        let shell = Shell::builder()
-            .with_config(config)
-            .with_prompt("OVERRIDE> ".to_string())
-            .build();
-        assert_eq!(shell.ctx.config.prompt, "OVERRIDE> ");
-    }
-
-    #[test]
-    fn build_derives_history_path_from_home_dir() {
-        use std::path::PathBuf;
-        let home = PathBuf::from("/tmp/test-home");
-        let shell = Shell::builder().with_home_dir(home.clone()).build();
-        assert_eq!(
-            shell.ctx.config.history_path,
-            Some(home.join(".ferrish_history"))
-        );
-    }
-
-    #[test]
-    fn explicit_history_path_not_overridden() {
-        use std::path::PathBuf;
-        let custom = PathBuf::from("/tmp/my_history");
-        let config = ShellConfig {
-            history_path: Some(custom.clone()),
-            ..Default::default()
-        };
-        let shell = Shell::builder()
-            .with_home_dir(PathBuf::from("/tmp/home"))
-            .with_config(config)
-            .build();
-        assert_eq!(shell.ctx.config.history_path, Some(custom));
+        let shell = Shell::with_config(config);
+        assert_eq!(shell.ctx.config.continuation_prompt, "... ");
     }
 }
