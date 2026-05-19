@@ -12,6 +12,48 @@ use crate::{
     resolver,
 };
 
+/// Byte-backed source code for miette diagnostics.
+///
+/// Keeps `SourceSpan` byte offsets accurate even when input contains non-UTF-8
+/// bytes: `String::from_utf8_lossy` replaces each invalid byte with U+FFFD
+/// (3 bytes), shifting offsets for every span that follows.
+struct ByteSource {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+impl ByteSource {
+    fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
+        ByteSource {
+            name: name.into(),
+            bytes,
+        }
+    }
+}
+
+impl miette::SourceCode for ByteSource {
+    fn read_span<'a>(
+        &'a self,
+        span: &miette::SourceSpan,
+        context_lines_before: usize,
+        context_lines_after: usize,
+    ) -> Result<Box<dyn miette::SpanContents<'a> + 'a>, miette::MietteError> {
+        // Vec<u8> implements SourceCode with the same byte-scanning algorithm as
+        // str — no UTF-8 round-trip means spans stay byte-accurate.
+        let inner = self
+            .bytes
+            .read_span(span, context_lines_before, context_lines_after)?;
+        Ok(Box::new(miette::MietteSpanContents::new_named(
+            self.name.clone(),
+            inner.data(),
+            *inner.span(),
+            inner.line(),
+            inner.column(),
+            inner.line_count(),
+        )))
+    }
+}
+
 /// The ferrish shell REPL.
 pub struct Shell {
     ctx: ShellCtx,
@@ -85,8 +127,7 @@ impl Shell {
             Ok(None) => {}
             Err(e) => {
                 let fatal = e.is_fatal();
-                let src =
-                    miette::NamedSource::new("<input>", String::from_utf8_lossy(&raw).into_owned());
+                let src = ByteSource::new("<input>", raw);
                 writeln!(err, "{:?}", miette::Report::new(e).with_source_code(src))
                     .into_diagnostic()?;
                 if fatal {

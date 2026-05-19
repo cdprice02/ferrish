@@ -143,6 +143,17 @@ impl Lexer {
         )
     }
 
+    /// Returns `true` when the lexer is currently inside a single-quoted string.
+    ///
+    /// Used by [`ScriptReader`] to decide whether a trailing `\` on a physical
+    /// line is a line-continuation marker or a literal backslash: inside single
+    /// quotes `\` has no special meaning, so the pair must not be stripped.
+    ///
+    /// [`ScriptReader`]: crate::line_reader::ScriptReader
+    pub fn is_in_single_quote(&self) -> bool {
+        matches!(self.state, State::SingleQuote { .. })
+    }
+
     /// The raw bytes accumulated so far.
     ///
     /// Used by the shell to attach source code to diagnostic reports after

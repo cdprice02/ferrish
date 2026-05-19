@@ -170,10 +170,12 @@ impl LineReader for ScriptReader<'_> {
                 raw.pop();
             }
 
-            if raw.ends_with(b"\\") {
+            if raw.ends_with(b"\\") && !lexer.is_in_single_quote() {
                 // Backslash-newline: strip the backslash, push the rest, and
                 // read the next physical line without adding a newline so the
                 // lexer sees the two lines as one continuous word.
+                // Guard: inside single quotes `\` is literal — POSIX says
+                // single quotes suppress all special character interpretation.
                 raw.pop();
                 lexer.push(&raw);
                 continue;
