@@ -843,22 +843,4 @@ mod tests {
             }
         }
     }
-
-    proptest! {
-        #[test]
-        fn unclosed_quote_iff_needs_continuation(
-            input in proptest::collection::vec(
-                prop_oneof![0x20u8..=0x7bu8, 0x7du8..=0x7eu8], 0..64
-            )
-        ) {
-            use crate::{error::ShellError, lexer};
-            let is_unclosed = matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. }));
-            let needs_cont = lexer::needs_continuation(&input);
-            prop_assert_eq!(
-                is_unclosed, needs_cont,
-                "UnclosedQuote and needs_continuation disagree for: {:?}",
-                String::from_utf8_lossy(&input)
-            );
-        }
-    }
 }

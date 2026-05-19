@@ -98,6 +98,12 @@ enum State {
 /// [`needs_continuation`]: Lexer::needs_continuation
 pub struct Lexer {
     buf: BytesMut,
+    /// Frozen view of `buf` created by [`finalize`]. Shared zero-copy with
+    /// callers via [`raw_bytes_shared`].
+    ///
+    /// [`finalize`]: Lexer::finalize
+    /// [`raw_bytes_shared`]: Lexer::raw_bytes_shared
+    frozen: Option<Bytes>,
     pos: usize,
     state: State,
     pending: VecDeque<Result<Token, ShellError>>,
@@ -115,6 +121,7 @@ impl Lexer {
     pub fn new() -> Self {
         Self {
             buf: BytesMut::new(),
+            frozen: None,
             pos: 0,
             state: State::Neutral,
             pending: VecDeque::new(),
@@ -134,32 +141,50 @@ impl Lexer {
         self.scan();
     }
 
-    /// Returns `true` when the lexer is inside an unclosed quote and needs
-    /// more input before a complete command can be produced.
+    /// Returns `true` when more input is required before a complete command
+    /// can be produced: inside an unclosed quote, or after a trailing unquoted
+    /// `\` (backslash-newline line continuation).
     pub fn needs_continuation(&self) -> bool {
-        matches!(
+        if self.finalized {
+            return false;
+        }
+        if matches!(
             self.state,
             State::SingleQuote { .. } | State::DoubleQuote { .. }
-        )
+        ) {
+            return true;
+        }
+        // Trailing unquoted backslash: scan() stops with pos pointing at `\`.
+        !self.finalized && self.pos < self.buf.len() && self.buf[self.pos] == b'\\'
     }
 
     /// Returns `true` when the lexer is currently inside a single-quoted string.
     ///
-    /// Used by [`ScriptReader`] to decide whether a trailing `\` on a physical
-    /// line is a line-continuation marker or a literal backslash: inside single
-    /// quotes `\` has no special meaning, so the pair must not be stripped.
-    ///
-    /// [`ScriptReader`]: crate::line_reader::ScriptReader
+    /// Single quotes suppress all special character interpretation, including
+    /// backslash escapes, so `\<LF>` is literal and must not be stripped.
     pub fn is_in_single_quote(&self) -> bool {
         matches!(self.state, State::SingleQuote { .. })
     }
 
-    /// The raw bytes accumulated so far.
-    ///
-    /// Used by the shell to attach source code to diagnostic reports after
-    /// all input for a command has been collected.
+    /// The raw bytes accumulated so far, as a slice.
     pub fn raw_bytes(&self) -> &[u8] {
-        &self.buf
+        match &self.frozen {
+            Some(b) => b,
+            None => &self.buf,
+        }
+    }
+
+    /// A zero-copy [`Bytes`] view of the raw input, available after [`finalize`].
+    ///
+    /// Cheap to clone (ref-counted). Use this in the error path of [`Shell::step`]
+    /// so the lexer's buffer can be consumed by the parser without an extra copy.
+    ///
+    /// [`finalize`]: Lexer::finalize
+    /// [`Shell::step`]: crate::shell::Shell
+    pub fn raw_bytes_shared(&self) -> Bytes {
+        self.frozen
+            .clone()
+            .expect("raw_bytes_shared called before finalize")
     }
 
     /// Signal end-of-input.
@@ -177,10 +202,9 @@ impl Lexer {
         match std::mem::replace(&mut self.state, State::Neutral) {
             State::Neutral => {}
             State::Word { start, content } => {
-                let bytes = Bytes::copy_from_slice(&content);
                 let span = SourceSpan::from((start, end - start));
                 self.pending.push_back(Ok(Token {
-                    kind: TokenKind::Word(bytes),
+                    kind: TokenKind::Word(Bytes::from(content)),
                     span,
                 }));
             }
@@ -197,6 +221,10 @@ impl Lexer {
                 }));
             }
         }
+
+        // Freeze the accumulation buffer into a ref-counted Bytes so callers
+        // can share it cheaply (zero-copy) via raw_bytes_shared().
+        self.frozen = Some(std::mem::take(&mut self.buf).freeze());
     }
 
     fn scan(&mut self) {
@@ -241,14 +269,21 @@ impl Lexer {
                     b'\\' => {
                         if self.pos + 1 < self.buf.len() {
                             let next = self.buf[self.pos + 1];
-                            self.state = State::Word {
-                                start: self.pos,
-                                content: vec![next],
-                            };
-                            self.pos += 2;
+                            if next == b'\n' {
+                                // \<LF> in unquoted context: line continuation.
+                                // POSIX: remove both characters from the stream.
+                                self.state = State::Neutral;
+                                self.pos += 2;
+                            } else {
+                                self.state = State::Word {
+                                    start: self.pos,
+                                    content: vec![next],
+                                };
+                                self.pos += 2;
+                            }
                         } else {
-                            // Trailing backslash — stop; caller will provide more
-                            // bytes (backslash-newline continuation) or finalize.
+                            // Trailing backslash — stop; needs_continuation()
+                            // will detect self.pos pointing at `\`.
                             self.state = State::Neutral;
                             break;
                         }
@@ -264,7 +299,7 @@ impl Lexer {
 
                 State::Word { start, mut content } => match b {
                     b if b.is_ascii_whitespace() => {
-                        let bytes = Bytes::copy_from_slice(&content);
+                        let bytes = Bytes::from(content);
                         let span = SourceSpan::from((start, self.pos - start));
                         self.pending.push_back(Ok(Token {
                             kind: TokenKind::Word(bytes),
@@ -274,7 +309,7 @@ impl Lexer {
                         self.pos += 1;
                     }
                     b'|' => {
-                        let bytes = Bytes::copy_from_slice(&content);
+                        let bytes = Bytes::from(content);
                         let span = SourceSpan::from((start, self.pos - start));
                         self.pending.push_back(Ok(Token {
                             kind: TokenKind::Word(bytes),
@@ -308,9 +343,16 @@ impl Lexer {
                     b'\\' => {
                         if self.pos + 1 < self.buf.len() {
                             let next = self.buf[self.pos + 1];
-                            content.push(next);
-                            self.state = State::Word { start, content };
-                            self.pos += 2;
+                            if next == b'\n' {
+                                // \<LF>: line continuation inside a word — discard
+                                // both and continue accumulating on the next line.
+                                self.state = State::Word { start, content };
+                                self.pos += 2;
+                            } else {
+                                content.push(next);
+                                self.state = State::Word { start, content };
+                                self.pos += 2;
+                            }
                         } else {
                             // Trailing backslash — wait for next push or finalize.
                             self.state = State::Word { start, content };
@@ -357,6 +399,9 @@ impl Lexer {
                         // Deferred backslash from previous push boundary.
                         if matches!(b, b'"' | b'\\') {
                             content.push(b);
+                        } else if b == b'\n' {
+                            // \<LF> across a push boundary: POSIX line
+                            // continuation inside double quotes — discard \n.
                         } else {
                             content.push(b'\\');
                             content.push(b);
@@ -379,6 +424,10 @@ impl Lexer {
                             let next = self.buf[self.pos + 1];
                             if matches!(next, b'"' | b'\\') {
                                 content.push(next);
+                                self.pos += 2;
+                            } else if next == b'\n' {
+                                // \<LF> in double quotes: POSIX line
+                                // continuation — discard both characters.
                                 self.pos += 2;
                             } else {
                                 // Non-special backslash: literal \ + next char.
@@ -424,20 +473,6 @@ impl Iterator for Lexer {
     fn next(&mut self) -> Option<Self::Item> {
         self.pending.pop_front()
     }
-}
-
-// --- Public helpers ---
-
-/// Returns `true` when `bytes` ends in an incomplete construct (e.g. an
-/// unclosed quote) that requires more input before a complete command can
-/// be parsed.
-///
-/// Creates a temporary `Lexer` to perform the check — identical to calling
-/// `Lexer::new()`, `push(bytes)`, `needs_continuation()`.
-pub fn needs_continuation(bytes: &[u8]) -> bool {
-    let mut lex = Lexer::new();
-    lex.push(bytes);
-    lex.needs_continuation()
 }
 
 #[cfg(test)]
@@ -635,23 +670,95 @@ mod tests {
     }
 
     #[test]
-    fn needs_continuation_false_for_complete_input() {
-        assert!(!needs_continuation(b"echo hello\n"));
+    fn needs_continuation_true_for_trailing_backslash() {
+        let mut lex = Lexer::new();
+        lex.push(b"echo foo\\");
+        assert!(lex.needs_continuation());
     }
 
     #[test]
-    fn needs_continuation_true_for_unclosed_single_quote() {
-        assert!(needs_continuation(b"echo 'hello\n"));
+    fn needs_continuation_false_after_trailing_backslash_resolved() {
+        let mut lex = Lexer::new();
+        lex.push(b"echo foo\\\nbar\n");
+        assert!(!lex.needs_continuation());
+    }
+
+    // --- Backslash-newline (\<LF>) line continuation ---
+
+    #[test]
+    fn backslash_newline_in_neutral_merges_words() {
+        // \<LF> between two words: both removed, words join
+        let tokens = lex_raw(b"ec\\\nho hello\n");
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"echo"));
     }
 
     #[test]
-    fn needs_continuation_true_for_unclosed_double_quote() {
-        assert!(needs_continuation(b"echo \"hello\n"));
+    fn backslash_newline_in_word_continues_accumulation() {
+        let tokens = lex_raw(b"echo foo\\\nbar\n");
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[1].kind, TokenKind::Word(b) if b.as_ref() == b"foobar"));
     }
 
     #[test]
-    fn needs_continuation_false_for_closed_quotes() {
-        assert!(!needs_continuation(b"echo 'hello'\n"));
-        assert!(!needs_continuation(b"echo \"hello\"\n"));
+    fn backslash_newline_multiple_continuations() {
+        let tokens = lex_raw(b"echo a\\\nb\\\nc\n");
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[1].kind, TokenKind::Word(b) if b.as_ref() == b"abc"));
+    }
+
+    #[test]
+    fn backslash_newline_across_push_boundary() {
+        let mut lex = Lexer::new();
+        lex.push(b"echo foo\\");
+        assert!(lex.needs_continuation());
+        lex.push(b"\nbar\n");
+        assert!(!lex.needs_continuation());
+        lex.finalize();
+        let tokens: Vec<_> = lex.collect::<Result<_, _>>().unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[1].kind, TokenKind::Word(b) if b.as_ref() == b"foobar"));
+    }
+
+    #[test]
+    fn backslash_newline_inside_single_quote_is_literal() {
+        // Inside single quotes \<LF> is two literal characters, not continuation.
+        let tokens = lex_raw(b"echo 'foo\\\nbar'\n");
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[1].kind, TokenKind::Word(b) if b.as_ref() == b"foo\\\nbar"));
+    }
+
+    // --- Double-quote \<LF> (POSIX line continuation inside double quotes) ---
+
+    #[test]
+    fn dq_backslash_newline_is_continuation() {
+        // \<LF> inside double quotes removes both chars — content is joined.
+        let tokens = lex_raw(b"\"foo\\\nbar\"\n");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"foobar"));
+    }
+
+    #[test]
+    fn dq_backslash_newline_across_push_boundary() {
+        // \<LF> split: `\` ends one push, `\n` starts the next.
+        let mut lex = Lexer::new();
+        lex.push(b"\"foo\\");
+        assert!(lex.needs_continuation()); // open double-quote
+        lex.push(b"\nbar\"");
+        lex.finalize();
+        let tokens: Vec<_> = lex.collect::<Result<_, _>>().unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"foobar"));
+    }
+
+    #[test]
+    fn dq_non_newline_after_pending_bs_still_literal() {
+        // \<LF> fix must not affect the existing non-special-char path.
+        let mut lex = Lexer::new();
+        lex.push(b"\"foo\\");
+        lex.push(b"xbar\"");
+        lex.finalize();
+        let tokens: Vec<_> = lex.collect::<Result<_, _>>().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"foo\\xbar"));
     }
 }

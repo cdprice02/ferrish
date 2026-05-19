@@ -1,5 +1,6 @@
 use std::io::{BufRead, Write};
 
+use bytes::Bytes;
 use miette::IntoDiagnostic as _;
 
 use crate::{
@@ -19,11 +20,11 @@ use crate::{
 /// (3 bytes), shifting offsets for every span that follows.
 struct ByteSource {
     name: String,
-    bytes: Vec<u8>,
+    bytes: Bytes,
 }
 
 impl ByteSource {
-    fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
+    fn new(name: impl Into<String>, bytes: Bytes) -> Self {
         ByteSource {
             name: name.into(),
             bytes,
@@ -38,11 +39,12 @@ impl miette::SourceCode for ByteSource {
         context_lines_before: usize,
         context_lines_after: usize,
     ) -> Result<Box<dyn miette::SpanContents<'a> + 'a>, miette::MietteError> {
-        // Vec<u8> implements SourceCode with the same byte-scanning algorithm as
-        // str — no UTF-8 round-trip means spans stay byte-accurate.
-        let inner = self
-            .bytes
-            .read_span(span, context_lines_before, context_lines_after)?;
+        // Delegate to &[u8]'s SourceCode impl — no UTF-8 round-trip, so
+        // SourceSpan byte offsets stay accurate regardless of input encoding.
+        let inner =
+            self.bytes
+                .as_ref()
+                .read_span(span, context_lines_before, context_lines_after)?;
         Ok(Box::new(miette::MietteSpanContents::new_named(
             self.name.clone(),
             inner.data(),
@@ -120,7 +122,7 @@ impl Shell {
     /// Parse and execute one logical input unit. Returns `Some(code)` when the
     /// shell should exit, `None` to continue the REPL loop.
     fn step(&mut self, lexer: Lexer, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
-        let raw = lexer.raw_bytes().to_owned();
+        let raw = lexer.raw_bytes_shared();
         let stages = resolver::resolve(Parser::new(lexer));
         match executor::execute_pipeline(stages, &mut self.ctx) {
             Ok(Some(exit_code)) => return Ok(Some(exit_code)),

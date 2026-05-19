@@ -32,8 +32,8 @@ pub trait LineReader {
 /// Determines whether accumulated input forms a complete shell command.
 ///
 /// Implements [`reedline::Validator`] so it can be attached to [`Reedline`]
-/// for interactive multiline support. Uses the same [`Lexer`] state machine
-/// as the rest of the pipeline — no separate quote-tracking logic.
+/// for interactive multiline support. Delegates entirely to [`Lexer::needs_continuation`],
+/// which covers both unclosed quotes and trailing unquoted backslashes.
 pub struct ShellValidator;
 
 impl Validator for ShellValidator {
@@ -41,14 +41,10 @@ impl Validator for ShellValidator {
         let mut lex = Lexer::new();
         lex.push(line.as_bytes());
         if lex.needs_continuation() {
-            return ValidationResult::Incomplete;
+            ValidationResult::Incomplete
+        } else {
+            ValidationResult::Complete
         }
-        // Trailing backslash (outside quotes — validator would have returned
-        // Incomplete for unclosed quotes) means backslash-newline continuation.
-        if line.as_bytes().trim_ascii_end().ends_with(b"\\") {
-            return ValidationResult::Incomplete;
-        }
-        ValidationResult::Complete
     }
 }
 
@@ -83,9 +79,9 @@ impl Prompt for ShellPrompt {
 /// Interactive line reader backed by reedline.
 ///
 /// reedline accumulates physical lines (with [`ShellValidator`] gating
-/// multiline continuation). When the validator signals complete input,
-/// backslash-newline pairs are stripped and the joined bytes are pushed into
-/// a [`Lexer`] that is returned as [`LineInput::Lexer`].
+/// multiline continuation). When the validator signals complete input, the
+/// raw bytes are pushed directly into a [`Lexer`] — backslash-newline
+/// continuation and quote handling are resolved by the Lexer itself.
 pub struct InteractiveReader {
     editor: Reedline,
     prompt: ShellPrompt,
@@ -118,9 +114,8 @@ impl LineReader for InteractiveReader {
     fn read_line(&mut self) -> miette::Result<LineInput> {
         match self.editor.read_line(&self.prompt).into_diagnostic()? {
             Signal::Success(s) => {
-                let joined = join_backslash_newlines(s.into_bytes());
                 let mut lexer = Lexer::new();
-                lexer.push(&joined);
+                lexer.push(s.as_bytes());
                 lexer.push(b"\n");
                 lexer.finalize();
                 Ok(LineInput::Lexer(lexer))
@@ -193,26 +188,6 @@ impl LineReader for ScriptReader<'_> {
     }
 }
 
-/// Strip backslash-newline pairs from `bytes`, joining continuation lines.
-///
-/// Applied to reedline's multiline buffer after [`ShellValidator`] has
-/// confirmed the input is complete. At that point any remaining `\<LF>`
-/// pairs are outside unclosed quotes (the validator would have returned
-/// `Incomplete` for those), so a plain byte scan is sufficient.
-fn join_backslash_newlines(bytes: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-            i += 2;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use reedline::ValidationResult;
@@ -267,55 +242,5 @@ mod tests {
             ShellValidator.validate("echo foo\\\nbar"),
             ValidationResult::Complete
         ));
-    }
-
-    #[test]
-    fn validator_incomplete_trailing_backslash_with_trailing_spaces() {
-        assert!(matches!(
-            ShellValidator.validate("echo foo\\   "),
-            ValidationResult::Incomplete
-        ));
-    }
-
-    // --- join_backslash_newlines ---
-
-    #[test]
-    fn join_removes_backslash_newline_pair() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\\nbar\n".to_vec()),
-            b"echo foobar\n"
-        );
-    }
-
-    #[test]
-    fn join_no_op_without_continuation() {
-        assert_eq!(
-            join_backslash_newlines(b"echo hello\n".to_vec()),
-            b"echo hello\n"
-        );
-    }
-
-    #[test]
-    fn join_multiple_continuations() {
-        assert_eq!(
-            join_backslash_newlines(b"echo a\\\nb\\\nc\n".to_vec()),
-            b"echo abc\n"
-        );
-    }
-
-    #[test]
-    fn join_preserves_backslash_not_before_newline() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\bar\n".to_vec()),
-            b"echo foo\\bar\n"
-        );
-    }
-
-    #[test]
-    fn join_preserves_trailing_backslash_at_end_of_buffer() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\".to_vec()),
-            b"echo foo\\"
-        );
     }
 }
