@@ -1,7 +1,6 @@
 use std::process::ExitStatus;
 
 use crate::command::CommandKind;
-use crate::input::InputSource;
 use crate::lexer::QuoteKind;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
@@ -13,6 +12,10 @@ pub type ShellResult<T> = Result<T, ShellError>;
 ///
 /// These are domain errors that the shell can handle gracefully.
 /// They're displayed to the user but don't crash the shell.
+///
+/// Variants that carry a `span` report a byte offset into the raw input.
+/// Source code is attached at the display layer via `.with_source_code()`
+/// on the enclosing [`miette::Report`].
 #[derive(Error, Debug, Diagnostic)]
 pub enum ShellError {
     // --- Command-level ---
@@ -25,9 +28,6 @@ pub enum ShellError {
         /// Byte offset of the command token in the raw input line.
         #[label("command not found")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 
     /// A required operand was not provided.
@@ -50,9 +50,6 @@ pub enum ShellError {
         /// Byte offset of the offending argument in the raw input line.
         #[label("no such file or directory")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 
     /// The path exists but is a directory where a regular file was expected.
@@ -64,9 +61,6 @@ pub enum ShellError {
         /// Byte offset of the offending argument in the raw input line.
         #[label("is a directory")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 
     /// The path exists but is a regular file where a directory was expected.
@@ -78,9 +72,6 @@ pub enum ShellError {
         /// Byte offset of the offending argument in the raw input line.
         #[label("not a directory")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 
     // --- Process execution ---
@@ -133,9 +124,6 @@ pub enum ShellError {
         /// Absolute byte offset of the opening quote character in the raw input line.
         #[label("quote opened here")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 
     /// A pipeline segment (between `|` operators) is empty.
@@ -148,9 +136,6 @@ pub enum ShellError {
         /// Absolute byte offset of the `|` operator that produced an empty segment.
         #[label("unexpected token")]
         span: SourceSpan,
-        /// The raw input line this error was produced from.
-        #[source_code]
-        src: InputSource,
     },
 }
 
@@ -219,9 +204,7 @@ impl ShellError {
     }
 
     /// Extract the [`ExitStatus`] if this error (or its wrapped source) is a
-    /// [`ShellError::NonZeroExit`].  Useful for callers that need to inspect
-    /// stage exit codes without pattern-matching through the `InCommand`
-    /// wrapper at each call site.
+    /// [`ShellError::NonZeroExit`].
     pub fn as_exit_status(&self) -> Option<ExitStatus> {
         match self {
             ShellError::NonZeroExit(s) => Some(*s),
@@ -234,14 +217,22 @@ impl ShellError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::Input;
 
-    fn render_diagnostic(err: &impl miette::Diagnostic) -> String {
+    fn render(err: ShellError) -> String {
         let mut buf = String::new();
         miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::none())
-            .render_report(&mut buf, err)
+            .render_report(&mut buf, &err)
             .unwrap();
         buf
+    }
+
+    fn render_with_source(err: ShellError, src: impl miette::SourceCode + 'static) -> String {
+        let report = miette::Report::new(err).with_source_code(src);
+        format!("{report:?}")
+    }
+
+    fn make_source(raw: &[u8]) -> miette::NamedSource<String> {
+        miette::NamedSource::new("<input>", String::from_utf8_lossy(raw).into_owned())
     }
 
     #[test]
@@ -249,9 +240,9 @@ mod tests {
         let err = ShellError::CommandNotFound {
             name: "foobar".into(),
             span: (0, 6).into(),
-            src: Input::new(b"foobar arg1").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("foobar"));
+        let out = render_with_source(err, make_source(b"foobar arg1"));
+        assert!(out.contains("foobar"));
     }
 
     #[test]
@@ -259,9 +250,9 @@ mod tests {
         let err = ShellError::CommandNotFound {
             name: "foobar".into(),
             span: (0, 6).into(),
-            src: Input::new(b"foobar arg1").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("foobar arg1"));
+        let out = render_with_source(err, make_source(b"foobar arg1"));
+        assert!(out.contains("foobar arg1"));
     }
 
     #[test]
@@ -269,9 +260,9 @@ mod tests {
         let err = ShellError::CommandNotFound {
             name: "foobar".into(),
             span: (0, 6).into(),
-            src: Input::new(b"foobar arg1").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("command not found"));
+        let out = render_with_source(err, make_source(b"foobar arg1"));
+        assert!(out.contains("command not found"));
     }
 
     #[test]
@@ -279,9 +270,9 @@ mod tests {
         let err = ShellError::FileNotFound {
             name: "/nope".into(),
             span: (3, 5).into(),
-            src: Input::new(b"cd /nope").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("/nope"));
+        let out = render_with_source(err, make_source(b"cd /nope"));
+        assert!(out.contains("/nope"));
     }
 
     #[test]
@@ -289,9 +280,9 @@ mod tests {
         let err = ShellError::NotADirectory {
             name: "plain.txt".into(),
             span: (3, 9).into(),
-            src: Input::new(b"cd plain.txt").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("plain.txt"));
+        let out = render_with_source(err, make_source(b"cd plain.txt"));
+        assert!(out.contains("plain.txt"));
     }
 
     #[test]
@@ -299,47 +290,35 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteKind::Single,
             span: (5, 1).into(),
-            src: Input::new(b"echo 'hello").as_source(),
         };
-        assert!(render_diagnostic(&err).contains("quote opened here"));
-    }
-
-    fn dummy_src() -> InputSource {
-        Input::new(b"").as_source()
-    }
-
-    fn dummy_span() -> SourceSpan {
-        SourceSpan::from((0, 0))
+        let out = render_with_source(err, make_source(b"echo 'hello"));
+        assert!(out.contains("quote opened here"));
     }
 
     #[test]
     fn test_display_command_not_found() {
         let err = ShellError::CommandNotFound {
             name: "foo".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert_eq!(err.to_string(), "foo: command not found");
     }
 
     #[test]
     fn test_display_missing_operand() {
-        let err = ShellError::MissingOperand;
-        assert_eq!(err.to_string(), "missing operand");
+        assert_eq!(ShellError::MissingOperand.to_string(), "missing operand");
     }
 
     #[test]
     fn test_display_home_not_set() {
-        let err = ShellError::HomeNotSet;
-        assert_eq!(err.to_string(), "home directory not set");
+        assert_eq!(ShellError::HomeNotSet.to_string(), "home directory not set");
     }
 
     #[test]
     fn test_display_file_not_found() {
         let err = ShellError::FileNotFound {
             name: "/path/to/file".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert_eq!(err.to_string(), "no such file or directory: /path/to/file");
     }
@@ -348,8 +327,7 @@ mod tests {
     fn test_display_is_a_directory() {
         let err = ShellError::IsADirectory {
             name: "/some/dir".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert_eq!(err.to_string(), "is a directory: /some/dir");
     }
@@ -358,8 +336,7 @@ mod tests {
     fn test_display_not_a_directory() {
         let err = ShellError::NotADirectory {
             name: "/some/file".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert_eq!(err.to_string(), "not a directory: /some/file");
     }
@@ -368,8 +345,7 @@ mod tests {
     fn test_in_command_prepends_command_name() {
         let inner = ShellError::FileNotFound {
             name: "/no/such".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         let err = ShellError::InCommand {
             command: CommandKind::BuiltIn(crate::command::builtin::BuiltInCommand::new(
@@ -397,7 +373,6 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteKind::Single,
             span: SourceSpan::from((0, 1)),
-            src: dummy_src(),
         };
         assert_eq!(err.to_string(), "unclosed single quote");
     }
@@ -407,7 +382,6 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteKind::Double,
             span: SourceSpan::from((5, 1)),
-            src: dummy_src(),
         };
         assert_eq!(err.to_string(), "unclosed double quote");
     }
@@ -440,8 +414,7 @@ mod tests {
     fn test_as_exit_status_other_variants_return_none() {
         let err = ShellError::CommandNotFound {
             name: "foo".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert_eq!(err.as_exit_status(), None);
     }
@@ -456,8 +429,7 @@ mod tests {
     fn test_is_fatal_command_not_found() {
         let err = ShellError::CommandNotFound {
             name: "foo".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert!(!err.is_fatal());
     }
@@ -466,8 +438,7 @@ mod tests {
     fn test_is_fatal_file_not_found() {
         let err = ShellError::FileNotFound {
             name: "test".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
         assert!(!err.is_fatal());
     }
@@ -477,50 +448,44 @@ mod tests {
         let err = ShellError::UnclosedQuote {
             style: QuoteKind::Double,
             span: SourceSpan::from((0, 1)),
-            src: dummy_src(),
         };
         assert!(!err.is_fatal());
     }
 
     #[test]
     fn test_equality_file_not_found() {
-        let err1 = ShellError::FileNotFound {
+        let e1 = ShellError::FileNotFound {
             name: "file1".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
-        let err2 = ShellError::FileNotFound {
+        let e2 = ShellError::FileNotFound {
             name: "file1".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
-        assert_eq!(err1, err2);
+        assert_eq!(e1, e2);
     }
 
     #[test]
     fn test_inequality_file_not_found() {
-        let err1 = ShellError::FileNotFound {
+        let e1 = ShellError::FileNotFound {
             name: "file1".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
-        let err2 = ShellError::FileNotFound {
+        let e2 = ShellError::FileNotFound {
             name: "file2".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
-        assert_ne!(err1, err2);
+        assert_ne!(e1, e2);
     }
 
     #[test]
     fn test_equality_different_variant() {
-        let err1 = ShellError::CommandNotFound {
+        let e1 = ShellError::CommandNotFound {
             name: "foo".to_string(),
-            span: dummy_span(),
-            src: dummy_src(),
+            span: (0, 0).into(),
         };
-        let err2 = ShellError::MissingOperand;
-        assert_ne!(err1, err2);
+        let e2 = ShellError::MissingOperand;
+        assert_ne!(e1, e2);
     }
 
     #[test]
@@ -557,12 +522,10 @@ mod tests {
         let e1 = ShellError::UnclosedQuote {
             style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
-            src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
             style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
-            src: dummy_src(),
         };
         assert_eq!(e1, e2);
     }
@@ -572,13 +535,19 @@ mod tests {
         let e1 = ShellError::UnclosedQuote {
             style: QuoteKind::Single,
             span: SourceSpan::from((3, 1)),
-            src: dummy_src(),
         };
         let e2 = ShellError::UnclosedQuote {
             style: QuoteKind::Double,
             span: SourceSpan::from((3, 1)),
-            src: dummy_src(),
         };
         assert_ne!(e1, e2);
+    }
+
+    #[test]
+    fn render_empty_pipeline_segment() {
+        let err = ShellError::EmptyPipelineSegment {
+            span: SourceSpan::from((0, 1)),
+        };
+        assert!(render(err).contains("|"));
     }
 }

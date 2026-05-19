@@ -1,10 +1,10 @@
+use std::collections::VecDeque;
 use std::fmt;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use miette::SourceSpan;
 
 use crate::error::ShellError;
-use crate::input::{Input, InputSource};
 
 /// The kind of quote that was opened but never closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,107 +24,21 @@ impl fmt::Display for QuoteKind {
     }
 }
 
-/// Observable state of the lexer at any point during iteration.
-///
-/// Carries all flags that drive the state machine so callers can query
-/// completeness without re-running a full lex pass. New state fields (nesting
-/// depth, heredoc, etc.) are added here as the shell grammar grows.
-#[derive(Clone, Debug, Default)]
-pub struct LexerState {
-    /// The quote that is currently open, if any.
-    pub open_quote: Option<QuoteKind>,
-    /// Set when `scan_bytes` ends with a `\` inside a double-quoted string.
-    /// On the next call the first byte is checked: if it is `"` or `\`, both
-    /// bytes form an escape and the byte is skipped; otherwise the `\` was
-    /// literal and the byte is processed normally.
-    pending_dq_backslash: bool,
-}
-
-impl LexerState {
-    /// Returns `true` when the lexer is in a terminal state — no unclosed
-    /// quotes or other incomplete constructs. Used by the REPL input collector
-    /// to decide whether to prompt for more input.
-    pub fn is_complete(&self) -> bool {
-        self.open_quote.is_none()
-    }
-
-    /// Returns `true` when accumulated input is incomplete and more is needed.
-    pub fn needs_continuation(&self) -> bool {
-        self.open_quote.is_some()
-    }
-
-    /// Update quote state by scanning `bytes` without building tokens.
-    ///
-    /// Processes each byte and updates `open_quote` to reflect quote opens and
-    /// closes. May be called repeatedly on successive chunks; callers are
-    /// responsible for passing only new bytes on each call rather than the full
-    /// accumulated buffer.
-    ///
-    /// Escape and quote semantics mirror the `Lexer` iterator in `lexer.rs`.
-    /// Keep both in sync when extending the grammar.
-    pub fn scan_bytes(&mut self, bytes: &[u8]) {
-        let mut i = 0;
-        while i < bytes.len() {
-            match self.open_quote {
-                Some(QuoteKind::Single) => {
-                    if bytes[i] == b'\'' {
-                        self.open_quote = None;
-                    }
-                    i += 1;
-                }
-                Some(QuoteKind::Double) => {
-                    // Consume a backslash deferred from the previous chunk boundary.
-                    if self.pending_dq_backslash {
-                        self.pending_dq_backslash = false;
-                        if matches!(bytes[i], b'"' | b'\\') {
-                            i += 1; // skip the escaped byte
-                            continue;
-                        }
-                        // \ was not an escape — fall through to process bytes[i] normally.
-                    }
-                    if bytes[i] == b'\\' {
-                        if i + 1 < bytes.len() && matches!(bytes[i + 1], b'"' | b'\\') {
-                            i += 2;
-                            continue;
-                        } else if i + 1 == bytes.len() {
-                            // Chunk ends on \; defer the escape check to the next call.
-                            self.pending_dq_backslash = true;
-                            i += 1;
-                            continue;
-                        }
-                    }
-                    if bytes[i] == b'"' {
-                        self.open_quote = None;
-                    }
-                    i += 1;
-                }
-                None => {
-                    match bytes[i] {
-                        b'\'' => self.open_quote = Some(QuoteKind::Single),
-                        b'"' => self.open_quote = Some(QuoteKind::Double),
-                        b'\\' if i + 1 < bytes.len() => i += 1,
-                        _ => {}
-                    }
-                    i += 1;
-                }
-            }
-        }
-    }
-}
-
 /// The syntactic kind of a lexed token.
+///
+/// Adjacent quoted and unquoted segments (e.g. `pre'mid'post`) are accumulated
+/// into a single `Word` token by the lexer. Quote characters and backslash
+/// escapes are stripped from the content bytes but included in the span, so
+/// `span.len() == bytes.len()` iff the word is a pure unquoted sequence — the
+/// parser uses this to distinguish quoted redirect operators.
 #[derive(Debug, Clone)]
 pub enum TokenKind {
-    /// An unquoted word segment. May include redirect operator spellings such as
-    /// `>` or `2>>`; the parser classifies those.
+    /// A word: any whitespace-delimited token that is not a pipe. Includes
+    /// unquoted, single-quoted, double-quoted, and mixed-quoted content. The
+    /// span covers the full raw extent (quotes included); `bytes` holds the
+    /// resolved content (quotes and escape chars stripped).
     Word(Bytes),
-    /// Content of a single-quoted string (`'...'`). The span includes both quote
-    /// characters; the content bytes have the quotes stripped.
-    SingleQuoted(Bytes),
-    /// Content of a double-quoted string (`"..."`), with `\\` and `\"` escapes
-    /// resolved. The span includes both quote characters.
-    DoubleQuoted(Bytes),
-    /// An unquoted `|` character — always a pipeline separator.
+    /// An unquoted `|` — always a pipeline separator.
     Pipe,
 }
 
@@ -135,291 +49,384 @@ pub struct Token {
     pub kind: TokenKind,
     /// Byte offset and length of this token in the raw input.
     pub span: SourceSpan,
-    /// The raw input this token was lexed from.
-    pub src: InputSource,
 }
 
-/// Lazy token iterator produced by [`lex`].
-///
-/// Yields [`Token`] values one at a time as the parser pulls them. An unclosed
-/// quote is reported as a final `Err` item; after that the iterator returns
-/// `None`. The lexer's current state is always accessible via [`Lexer::state`].
-///
-/// Unescaped single-quoted strings and words/double-quoted strings without
-/// escape sequences are emitted as zero-copy slices of the original input
-/// buffer. Only tokens with processed escape sequences require a heap allocation.
-pub struct Lexer<'a> {
-    input: &'a Input,
-    buffer: &'a [u8],
-    abs_start: usize,
-    src: InputSource,
-    i: usize,
-    state: LexerState,
+// --- Internal state machine ---
 
-    // Unquoted word accumulation.
-    word_start_abs: Option<usize>,
-    word_buf: Vec<u8>,
-    word_has_escape: bool,
-
-    // Double-quoted string accumulation.
-    dq_buf: Vec<u8>,
-    dq_has_escape: bool,
-
-    // Buffer index of the opening quote character.
-    quote_start_i: usize,
-
-    done: bool,
+enum State {
+    /// Between words (whitespace or start of input).
+    Neutral,
+    /// Accumulating an unquoted/mixed word.
+    Word {
+        /// Absolute byte offset of the first byte of this word in `buf`.
+        start: usize,
+        /// Accumulated content bytes (quotes stripped, escapes resolved).
+        content: Vec<u8>,
+    },
+    /// Inside a single-quoted string (`'...'`), as part of an ongoing word.
+    SingleQuote {
+        /// `buf` offset where the current word started (before the `'`).
+        word_start: usize,
+        /// Byte offset of the opening `'` in `buf` (for `UnclosedQuote` span).
+        quote_start: usize,
+        /// Content accumulated so far (including bytes before the opening `'`).
+        content: Vec<u8>,
+    },
+    /// Inside a double-quoted string (`"..."`), as part of an ongoing word.
+    DoubleQuote {
+        word_start: usize,
+        quote_start: usize,
+        content: Vec<u8>,
+        /// Chunk ended on an unresolved `\`; the escape check is deferred to
+        /// the first byte of the next `push` call.
+        pending_bs: bool,
+    },
 }
 
-impl<'a> Lexer<'a> {
-    /// The lexer's current state — readable at any point during iteration.
-    pub fn state(&self) -> &LexerState {
-        &self.state
+/// Streaming shell lexer.
+///
+/// Call [`push`] to feed raw bytes; tokens are immediately processed and
+/// queued for retrieval via the [`Iterator`] impl. Call [`finalize`] once
+/// all input has been pushed to flush any trailing word and emit any
+/// unclosed-quote error.
+///
+/// [`needs_continuation`] returns `true` while the lexer is inside an
+/// unclosed quote, replacing the old separate `scan_bytes` pass.
+///
+/// [`push`]: Lexer::push
+/// [`finalize`]: Lexer::finalize
+/// [`needs_continuation`]: Lexer::needs_continuation
+pub struct Lexer {
+    buf: BytesMut,
+    pos: usize,
+    state: State,
+    pending: VecDeque<Result<Token, ShellError>>,
+    finalized: bool,
+}
+
+impl Default for Lexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lexer {
+    /// Create a new, empty lexer.
+    pub fn new() -> Self {
+        Self {
+            buf: BytesMut::new(),
+            pos: 0,
+            state: State::Neutral,
+            pending: VecDeque::new(),
+            finalized: false,
+        }
     }
 
-    /// Emit and clear any pending unquoted word token.
+    /// Append `bytes` to the internal buffer and process them immediately.
     ///
-    /// `end_abs` is the absolute byte offset of the first byte past the word.
-    /// Returns `None` when no word is in progress.
-    fn flush_word(&mut self, end_abs: usize) -> Option<Token> {
-        let start = self.word_start_abs.take()?;
-        let bytes = if self.word_has_escape {
-            self.word_has_escape = false;
-            Bytes::from(std::mem::take(&mut self.word_buf))
-        } else {
-            self.word_buf.clear();
-            self.input.raw_slice(start..end_abs)
-        };
-        let span = SourceSpan::from((start, end_abs - start));
-        Some(Token {
-            kind: TokenKind::Word(bytes),
-            span,
-            src: self.src.clone(),
-        })
+    /// Complete tokens are enqueued into the pending queue. In-progress
+    /// tokens (mid-word or inside an unclosed quote) remain in state until
+    /// more bytes arrive or [`finalize`] is called.
+    ///
+    /// [`finalize`]: Lexer::finalize
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+        self.scan();
+    }
+
+    /// Returns `true` when the lexer is inside an unclosed quote and needs
+    /// more input before a complete command can be produced.
+    pub fn needs_continuation(&self) -> bool {
+        matches!(
+            self.state,
+            State::SingleQuote { .. } | State::DoubleQuote { .. }
+        )
+    }
+
+    /// The raw bytes accumulated so far.
+    ///
+    /// Used by the shell to attach source code to diagnostic reports after
+    /// all input for a command has been collected.
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// Signal end-of-input.
+    ///
+    /// Flushes any trailing word token or emits an [`ShellError::UnclosedQuote`]
+    /// error if the input ends inside a quote. Idempotent: safe to call
+    /// multiple times.
+    pub fn finalize(&mut self) {
+        if self.finalized {
+            return;
+        }
+        self.finalized = true;
+        let end = self.buf.len();
+
+        match std::mem::replace(&mut self.state, State::Neutral) {
+            State::Neutral => {}
+            State::Word { start, content } => {
+                let bytes = Bytes::copy_from_slice(&content);
+                let span = SourceSpan::from((start, end - start));
+                self.pending.push_back(Ok(Token {
+                    kind: TokenKind::Word(bytes),
+                    span,
+                }));
+            }
+            State::SingleQuote { quote_start, .. } => {
+                self.pending.push_back(Err(ShellError::UnclosedQuote {
+                    style: QuoteKind::Single,
+                    span: SourceSpan::from((quote_start, 1)),
+                }));
+            }
+            State::DoubleQuote { quote_start, .. } => {
+                self.pending.push_back(Err(ShellError::UnclosedQuote {
+                    style: QuoteKind::Double,
+                    span: SourceSpan::from((quote_start, 1)),
+                }));
+            }
+        }
+    }
+
+    fn scan(&mut self) {
+        while self.pos < self.buf.len() {
+            let b = self.buf[self.pos];
+
+            // Take state to avoid borrow conflicts during transitions.
+            let state = std::mem::replace(&mut self.state, State::Neutral);
+
+            match state {
+                State::Neutral => match b {
+                    b if b.is_ascii_whitespace() => {
+                        self.state = State::Neutral;
+                        self.pos += 1;
+                    }
+                    b'|' => {
+                        let span = SourceSpan::from((self.pos, 1));
+                        self.pending.push_back(Ok(Token {
+                            kind: TokenKind::Pipe,
+                            span,
+                        }));
+                        self.state = State::Neutral;
+                        self.pos += 1;
+                    }
+                    b'\'' => {
+                        self.state = State::SingleQuote {
+                            word_start: self.pos,
+                            quote_start: self.pos,
+                            content: Vec::new(),
+                        };
+                        self.pos += 1;
+                    }
+                    b'"' => {
+                        self.state = State::DoubleQuote {
+                            word_start: self.pos,
+                            quote_start: self.pos,
+                            content: Vec::new(),
+                            pending_bs: false,
+                        };
+                        self.pos += 1;
+                    }
+                    b'\\' => {
+                        if self.pos + 1 < self.buf.len() {
+                            let next = self.buf[self.pos + 1];
+                            self.state = State::Word {
+                                start: self.pos,
+                                content: vec![next],
+                            };
+                            self.pos += 2;
+                        } else {
+                            // Trailing backslash — stop; caller will provide more
+                            // bytes (backslash-newline continuation) or finalize.
+                            self.state = State::Neutral;
+                            break;
+                        }
+                    }
+                    _ => {
+                        self.state = State::Word {
+                            start: self.pos,
+                            content: vec![b],
+                        };
+                        self.pos += 1;
+                    }
+                },
+
+                State::Word { start, mut content } => match b {
+                    b if b.is_ascii_whitespace() => {
+                        let bytes = Bytes::copy_from_slice(&content);
+                        let span = SourceSpan::from((start, self.pos - start));
+                        self.pending.push_back(Ok(Token {
+                            kind: TokenKind::Word(bytes),
+                            span,
+                        }));
+                        self.state = State::Neutral;
+                        self.pos += 1;
+                    }
+                    b'|' => {
+                        let bytes = Bytes::copy_from_slice(&content);
+                        let span = SourceSpan::from((start, self.pos - start));
+                        self.pending.push_back(Ok(Token {
+                            kind: TokenKind::Word(bytes),
+                            span,
+                        }));
+                        let pipe_span = SourceSpan::from((self.pos, 1));
+                        self.pending.push_back(Ok(Token {
+                            kind: TokenKind::Pipe,
+                            span: pipe_span,
+                        }));
+                        self.state = State::Neutral;
+                        self.pos += 1;
+                    }
+                    b'\'' => {
+                        self.state = State::SingleQuote {
+                            word_start: start,
+                            quote_start: self.pos,
+                            content,
+                        };
+                        self.pos += 1;
+                    }
+                    b'"' => {
+                        self.state = State::DoubleQuote {
+                            word_start: start,
+                            quote_start: self.pos,
+                            content,
+                            pending_bs: false,
+                        };
+                        self.pos += 1;
+                    }
+                    b'\\' => {
+                        if self.pos + 1 < self.buf.len() {
+                            let next = self.buf[self.pos + 1];
+                            content.push(next);
+                            self.state = State::Word { start, content };
+                            self.pos += 2;
+                        } else {
+                            // Trailing backslash — wait for next push or finalize.
+                            self.state = State::Word { start, content };
+                            break;
+                        }
+                    }
+                    _ => {
+                        content.push(b);
+                        self.state = State::Word { start, content };
+                        self.pos += 1;
+                    }
+                },
+
+                State::SingleQuote {
+                    word_start,
+                    quote_start,
+                    mut content,
+                } => {
+                    if b == b'\'' {
+                        // Closing quote: return to word accumulation.
+                        self.state = State::Word {
+                            start: word_start,
+                            content,
+                        };
+                        self.pos += 1;
+                    } else {
+                        content.push(b);
+                        self.state = State::SingleQuote {
+                            word_start,
+                            quote_start,
+                            content,
+                        };
+                        self.pos += 1;
+                    }
+                }
+
+                State::DoubleQuote {
+                    word_start,
+                    quote_start,
+                    mut content,
+                    pending_bs,
+                } => {
+                    if pending_bs {
+                        // Deferred backslash from previous push boundary.
+                        if matches!(b, b'"' | b'\\') {
+                            content.push(b);
+                        } else {
+                            content.push(b'\\');
+                            content.push(b);
+                        }
+                        self.state = State::DoubleQuote {
+                            word_start,
+                            quote_start,
+                            content,
+                            pending_bs: false,
+                        };
+                        self.pos += 1;
+                    } else if b == b'"' {
+                        self.state = State::Word {
+                            start: word_start,
+                            content,
+                        };
+                        self.pos += 1;
+                    } else if b == b'\\' {
+                        if self.pos + 1 < self.buf.len() {
+                            let next = self.buf[self.pos + 1];
+                            if matches!(next, b'"' | b'\\') {
+                                content.push(next);
+                                self.pos += 2;
+                            } else {
+                                // Non-special backslash: literal \ + next char.
+                                content.push(b'\\');
+                                content.push(next);
+                                self.pos += 2;
+                            }
+                            self.state = State::DoubleQuote {
+                                word_start,
+                                quote_start,
+                                content,
+                                pending_bs: false,
+                            };
+                        } else {
+                            // Backslash at end of chunk — defer.
+                            self.state = State::DoubleQuote {
+                                word_start,
+                                quote_start,
+                                content,
+                                pending_bs: true,
+                            };
+                            self.pos += 1;
+                        }
+                    } else {
+                        content.push(b);
+                        self.state = State::DoubleQuote {
+                            word_start,
+                            quote_start,
+                            content,
+                            pending_bs: false,
+                        };
+                        self.pos += 1;
+                    }
+                }
+            }
+        }
     }
 }
 
-impl<'a> Iterator for Lexer<'a> {
+impl Iterator for Lexer {
     type Item = Result<Token, ShellError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-
-        loop {
-            if self.i >= self.buffer.len() {
-                self.done = true;
-
-                if let Some(ref kind) = self.state.open_quote.clone() {
-                    return Some(Err(ShellError::UnclosedQuote {
-                        style: kind.clone(),
-                        span: SourceSpan::from((self.abs_start + self.quote_start_i, 1)),
-                        src: self.src.clone(),
-                    }));
-                }
-
-                return self.flush_word(self.abs_start + self.buffer.len()).map(Ok);
-            }
-
-            let byte = self.buffer[self.i];
-
-            // --- Inside single quote ---
-            if self.state.open_quote == Some(QuoteKind::Single) {
-                if byte == b'\'' {
-                    let content_start = self.abs_start + self.quote_start_i + 1;
-                    let content_end = self.abs_start + self.i;
-                    let bytes = self.input.raw_slice(content_start..content_end);
-                    let span = SourceSpan::from((
-                        self.abs_start + self.quote_start_i,
-                        self.i - self.quote_start_i + 1,
-                    ));
-                    self.state.open_quote = None;
-                    self.i += 1;
-                    return Some(Ok(Token {
-                        kind: TokenKind::SingleQuoted(bytes),
-                        span,
-                        src: self.src.clone(),
-                    }));
-                }
-                self.i += 1;
-                continue;
-            }
-
-            // --- Inside double quote ---
-            if self.state.open_quote == Some(QuoteKind::Double) {
-                if byte == b'"' {
-                    let bytes = if self.dq_has_escape {
-                        self.dq_has_escape = false;
-                        Bytes::from(std::mem::take(&mut self.dq_buf))
-                    } else {
-                        self.dq_buf.clear();
-                        let content_start = self.abs_start + self.quote_start_i + 1;
-                        let content_end = self.abs_start + self.i;
-                        self.input.raw_slice(content_start..content_end)
-                    };
-                    let span = SourceSpan::from((
-                        self.abs_start + self.quote_start_i,
-                        self.i - self.quote_start_i + 1,
-                    ));
-                    self.state.open_quote = None;
-                    self.i += 1;
-                    return Some(Ok(Token {
-                        kind: TokenKind::DoubleQuoted(bytes),
-                        span,
-                        src: self.src.clone(),
-                    }));
-                }
-
-                if byte == b'\\' && self.i + 1 < self.buffer.len() {
-                    let next = self.buffer[self.i + 1];
-                    if next == b'"' || next == b'\\' {
-                        if !self.dq_has_escape {
-                            // Retroactively populate dq_buf with content scanned so far.
-                            let content_start = self.quote_start_i + 1;
-                            self.dq_buf
-                                .extend_from_slice(&self.buffer[content_start..self.i]);
-                            self.dq_has_escape = true;
-                        }
-                        self.dq_buf.push(next);
-                        self.i += 2;
-                        continue;
-                    }
-                }
-
-                if self.dq_has_escape {
-                    self.dq_buf.push(byte);
-                }
-                self.i += 1;
-                continue;
-            }
-
-            // --- Outside any quote ---
-            match byte {
-                b'\'' => {
-                    if let Some(token) = self.flush_word(self.abs_start + self.i) {
-                        // Return the pending word; the opening quote is recorded and i
-                        // advances past it so the next call resumes inside the quote.
-                        self.quote_start_i = self.i;
-                        self.state.open_quote = Some(QuoteKind::Single);
-                        self.i += 1;
-                        return Some(Ok(token));
-                    }
-                    self.quote_start_i = self.i;
-                    self.state.open_quote = Some(QuoteKind::Single);
-                    self.i += 1;
-                }
-
-                b'"' => {
-                    if let Some(token) = self.flush_word(self.abs_start + self.i) {
-                        self.quote_start_i = self.i;
-                        self.state.open_quote = Some(QuoteKind::Double);
-                        self.dq_has_escape = false;
-                        self.dq_buf.clear();
-                        self.i += 1;
-                        return Some(Ok(token));
-                    }
-                    self.quote_start_i = self.i;
-                    self.state.open_quote = Some(QuoteKind::Double);
-                    self.dq_has_escape = false;
-                    self.dq_buf.clear();
-                    self.i += 1;
-                }
-
-                b'\\' => {
-                    if self.word_start_abs.is_none() {
-                        self.word_start_abs = Some(self.abs_start + self.i);
-                    }
-                    if self.i + 1 < self.buffer.len() {
-                        if !self.word_has_escape {
-                            // Retroactively populate word_buf with bytes scanned so far.
-                            let word_rel_start = self.word_start_abs.unwrap() - self.abs_start;
-                            self.word_buf
-                                .extend_from_slice(&self.buffer[word_rel_start..self.i]);
-                            self.word_has_escape = true;
-                        }
-                        self.word_buf.push(self.buffer[self.i + 1]);
-                        self.i += 2;
-                    } else {
-                        // Trailing backslash — consumed silently. Switch to buffered mode
-                        // so the raw_slice path does not include the backslash.
-                        if !self.word_has_escape {
-                            let word_rel_start = self.word_start_abs.unwrap() - self.abs_start;
-                            self.word_buf
-                                .extend_from_slice(&self.buffer[word_rel_start..self.i]);
-                            self.word_has_escape = true;
-                        }
-                        self.i += 1;
-                    }
-                }
-
-                b if b.is_ascii_whitespace() => {
-                    if let Some(token) = self.flush_word(self.abs_start + self.i) {
-                        self.i += 1;
-                        return Some(Ok(token));
-                    }
-                    self.i += 1;
-                }
-
-                b'|' => {
-                    if let Some(token) = self.flush_word(self.abs_start + self.i) {
-                        // Return the pending word; i still points at '|' so the pipe
-                        // token is emitted on the next call.
-                        return Some(Ok(token));
-                    }
-                    let span = SourceSpan::from((self.abs_start + self.i, 1));
-                    self.i += 1;
-                    return Some(Ok(Token {
-                        kind: TokenKind::Pipe,
-                        span,
-                        src: self.src.clone(),
-                    }));
-                }
-
-                _ => {
-                    if self.word_start_abs.is_none() {
-                        self.word_start_abs = Some(self.abs_start + self.i);
-                    }
-                    if self.word_has_escape {
-                        self.word_buf.push(byte);
-                    }
-                    self.i += 1;
-                }
-            }
-        }
+        self.pending.pop_front()
     }
 }
 
-/// Lex `input` into a lazy token iterator.
-///
-/// Tokens are produced on demand as the caller pulls from the iterator.
-/// The final state (e.g. an unclosed quote) is exposed via [`Lexer::state`]
-/// after the iterator is exhausted.
-pub fn lex(input: &Input) -> Lexer<'_> {
-    Lexer {
-        input,
-        buffer: input.trimmed_bytes(),
-        abs_start: input.leading_offset(),
-        src: input.as_source(),
-        i: 0,
-        state: LexerState::default(),
-        word_start_abs: None,
-        word_buf: Vec::new(),
-        word_has_escape: false,
-        dq_buf: Vec::new(),
-        dq_has_escape: false,
-        quote_start_i: 0,
-        done: false,
-    }
-}
+// --- Public helpers ---
 
 /// Returns `true` when `bytes` ends in an incomplete construct (e.g. an
 /// unclosed quote) that requires more input before a complete command can
 /// be parsed.
+///
+/// Creates a temporary `Lexer` to perform the check — identical to calling
+/// `Lexer::new()`, `push(bytes)`, `needs_continuation()`.
 pub fn needs_continuation(bytes: &[u8]) -> bool {
-    let mut state = LexerState::default();
-    state.scan_bytes(bytes);
-    state.needs_continuation()
+    let mut lex = Lexer::new();
+    lex.push(bytes);
+    lex.needs_continuation()
 }
 
 #[cfg(test)]
@@ -427,17 +434,27 @@ mod tests {
     use super::*;
 
     fn lex_raw(raw: &[u8]) -> Vec<Token> {
-        lex(&Input::new(raw))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
+        let mut lex = Lexer::new();
+        lex.push(raw);
+        lex.finalize();
+        lex.collect::<Result<Vec<_>, _>>().unwrap()
     }
 
     fn word_bytes(token: &Token) -> &[u8] {
         match &token.kind {
-            TokenKind::Word(b) | TokenKind::SingleQuoted(b) | TokenKind::DoubleQuoted(b) => b,
+            TokenKind::Word(b) => b,
             TokenKind::Pipe => b"|",
         }
     }
+
+    fn lex_err(raw: &[u8]) -> ShellError {
+        let mut lex = Lexer::new();
+        lex.push(raw);
+        lex.finalize();
+        lex.collect::<Result<Vec<_>, _>>().unwrap_err()
+    }
+
+    // --- Basic splitting ---
 
     #[test]
     fn simple_words_split_on_whitespace() {
@@ -456,34 +473,27 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_quoted_segments_are_separate_tokens() {
+    fn adjacent_quoted_segments_merge_into_one_token() {
+        // pre'mid'post is one whitespace-delimited unit → one Word token
         let tokens = lex_raw(b"pre'mid'post");
-        assert_eq!(tokens.len(), 3);
-        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"pre"));
-        assert!(matches!(&tokens[1].kind, TokenKind::SingleQuoted(b) if b.as_ref() == b"mid"));
-        assert!(matches!(&tokens[2].kind, TokenKind::Word(b) if b.as_ref() == b"post"));
-        let t0_end = tokens[0].span.offset() + tokens[0].span.len();
-        assert_eq!(t0_end, tokens[1].span.offset());
-        let t1_end = tokens[1].span.offset() + tokens[1].span.len();
-        assert_eq!(t1_end, tokens[2].span.offset());
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"premidpost"));
+        // Span covers the raw extent including quotes
+        assert_eq!(tokens[0].span.len(), 12);
     }
 
     #[test]
     fn single_quote_preserves_spaces() {
         let tokens = lex_raw(b"'hello    world'");
         assert_eq!(tokens.len(), 1);
-        assert!(
-            matches!(&tokens[0].kind, TokenKind::SingleQuoted(b) if b.as_ref() == b"hello    world")
-        );
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"hello    world"));
     }
 
     #[test]
     fn double_quote_processes_backslash_escapes() {
         let tokens = lex_raw(b"\"A \\\" inside\"");
         assert_eq!(tokens.len(), 1);
-        assert!(
-            matches!(&tokens[0].kind, TokenKind::DoubleQuoted(b) if b.as_ref() == b"A \" inside")
-        );
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(b) if b.as_ref() == b"A \" inside"));
     }
 
     #[test]
@@ -497,14 +507,44 @@ mod tests {
     fn quoted_pipe_not_a_separator() {
         let tokens = lex_raw(b"'foo | bar'");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(&tokens[0].kind, TokenKind::SingleQuoted(_)));
+        assert!(matches!(&tokens[0].kind, TokenKind::Word(_)));
+    }
+
+    #[test]
+    fn unquoted_redirect_span_matches_bytes() {
+        // span.len() == bytes.len() → eligible as redirect operator
+        let tokens = lex_raw(b">");
+        assert_eq!(tokens.len(), 1);
+        if let TokenKind::Word(b) = &tokens[0].kind {
+            assert_eq!(b.as_ref(), b">");
+            assert_eq!(tokens[0].span.len(), b.len());
+        }
+    }
+
+    #[test]
+    fn quoted_redirect_span_exceeds_bytes() {
+        // span.len() > bytes.len() → NOT a redirect operator
+        let tokens = lex_raw(b"'>'");
+        assert_eq!(tokens.len(), 1);
+        if let TokenKind::Word(b) = &tokens[0].kind {
+            assert_eq!(b.as_ref(), b">");
+            assert!(tokens[0].span.len() > b.len());
+        }
+    }
+
+    #[test]
+    fn escaped_redirect_span_exceeds_bytes() {
+        let tokens = lex_raw(b"\\>");
+        assert_eq!(tokens.len(), 1);
+        if let TokenKind::Word(b) = &tokens[0].kind {
+            assert_eq!(b.as_ref(), b">");
+            assert!(tokens[0].span.len() > b.len());
+        }
     }
 
     #[test]
     fn unclosed_single_quote_returns_error() {
-        let err = lex(&Input::new(b"echo 'hello"))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_err();
+        let err = lex_err(b"echo 'hello");
         assert!(matches!(
             err,
             ShellError::UnclosedQuote {
@@ -516,9 +556,7 @@ mod tests {
 
     #[test]
     fn unclosed_double_quote_returns_error() {
-        let err = lex(&Input::new(b"echo \"hello"))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_err();
+        let err = lex_err(b"echo \"hello");
         assert!(matches!(
             err,
             ShellError::UnclosedQuote {
@@ -530,9 +568,7 @@ mod tests {
 
     #[test]
     fn unclosed_single_quote_span_offset() {
-        let err = lex(&Input::new(b"echo 'hello"))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_err();
+        let err = lex_err(b"echo 'hello");
         if let ShellError::UnclosedQuote { span, .. } = err {
             assert_eq!(span.offset(), 5);
         } else {
@@ -548,33 +584,43 @@ mod tests {
     }
 
     #[test]
-    fn scan_bytes_dq_escape_at_chunk_boundary() {
-        // "hello\" split across two chunks — the \" escape must be honoured even
-        // though \ and " arrive in separate scan_bytes calls.
-        let mut state = LexerState::default();
-        state.scan_bytes(b"\"hello\\"); // opens double quote, ends mid-escape
-        assert!(state.needs_continuation());
-        state.scan_bytes(b"\"world\""); // \" consumed as escape, final " closes
-        assert!(!state.needs_continuation());
+    fn dq_escape_at_chunk_boundary() {
+        let mut lex = Lexer::new();
+        lex.push(b"\"hello\\");
+        assert!(lex.needs_continuation());
+        lex.push(b"\"world\"");
+        assert!(!lex.needs_continuation());
+        lex.finalize();
+        let tokens: Vec<_> = lex.collect::<Result<_, _>>().unwrap();
+        assert_eq!(tokens.len(), 1);
+        if let TokenKind::Word(b) = &tokens[0].kind {
+            assert_eq!(b.as_ref(), b"hello\"world");
+        }
     }
 
     #[test]
-    fn scan_bytes_dq_non_escape_at_chunk_boundary() {
-        // \ followed by a non-escapable char (x) across a boundary — \ is literal.
-        let mut state = LexerState::default();
-        state.scan_bytes(b"\"hello\\");
-        assert!(state.needs_continuation());
-        state.scan_bytes(b"xworld\""); // x is not escapable; " closes the quote
-        assert!(!state.needs_continuation());
+    fn dq_non_escape_at_chunk_boundary() {
+        let mut lex = Lexer::new();
+        lex.push(b"\"hello\\");
+        assert!(lex.needs_continuation());
+        lex.push(b"xworld\"");
+        assert!(!lex.needs_continuation());
+        lex.finalize();
+        let tokens: Vec<_> = lex.collect::<Result<_, _>>().unwrap();
+        assert_eq!(tokens.len(), 1);
+        if let TokenKind::Word(b) = &tokens[0].kind {
+            // backslash before 'x' is literal
+            assert_eq!(b.as_ref(), b"hello\\xworld");
+        }
     }
 
     #[test]
-    fn scan_bytes_incremental_detects_multiline_quote() {
-        let mut state = LexerState::default();
-        state.scan_bytes(b"echo 'hello\n");
-        assert!(state.needs_continuation());
-        state.scan_bytes(b"world'\n");
-        assert!(!state.needs_continuation());
+    fn incremental_push_detects_multiline_quote() {
+        let mut lex = Lexer::new();
+        lex.push(b"echo 'hello\n");
+        assert!(lex.needs_continuation());
+        lex.push(b"world'\n");
+        assert!(!lex.needs_continuation());
     }
 
     #[test]
@@ -596,31 +642,5 @@ mod tests {
     fn needs_continuation_false_for_closed_quotes() {
         assert!(!needs_continuation(b"echo 'hello'\n"));
         assert!(!needs_continuation(b"echo \"hello\"\n"));
-    }
-
-    #[test]
-    fn single_quoted_content_is_zero_copy_slice() {
-        let raw = b"'hello world'";
-        let input = Input::new(raw);
-        let tokens = lex(&input).collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(tokens.len(), 1);
-        if let TokenKind::SingleQuoted(b) = &tokens[0].kind {
-            assert_eq!(b.as_ref(), b"hello world");
-        } else {
-            panic!("expected SingleQuoted");
-        }
-    }
-
-    #[test]
-    fn unescaped_word_is_zero_copy_slice() {
-        let raw = b"hello";
-        let input = Input::new(raw);
-        let tokens = lex(&input).collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(tokens.len(), 1);
-        if let TokenKind::Word(b) = &tokens[0].kind {
-            assert_eq!(b.as_ref(), b"hello");
-        } else {
-            panic!("expected Word");
-        }
     }
 }

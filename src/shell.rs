@@ -6,9 +6,10 @@ use crate::{
     ctx::{ShellConfig, ShellCtx},
     executor,
     exit::ExitCode,
-    input::Input,
+    lexer::Lexer,
     line_reader::{InteractiveReader, LineInput, LineReader, ScriptReader},
-    parser, resolver,
+    parser::Parser,
+    resolver,
 };
 
 /// The ferrish shell REPL.
@@ -24,9 +25,6 @@ impl Default for Shell {
 
 impl Shell {
     /// Create a shell initialized from the current process environment.
-    ///
-    /// Sets `history_path` to `~/.ferrish_history` when the home directory is
-    /// available; leaves it `None` otherwise.
     pub fn new() -> Self {
         let ctx = ShellCtx::from_env();
         let config = ShellConfig {
@@ -47,41 +45,29 @@ impl Shell {
     }
 
     /// Run the interactive REPL using reedline for line editing.
-    ///
-    /// Reads from the terminal until `exit` is called or the user signals EOF
-    /// (Ctrl+D). Ctrl+C abandons the current input and returns to the prompt.
-    /// Diagnostics go to the process's real stderr.
     pub fn run_interactive(&mut self) -> miette::Result<ExitCode> {
         let mut reader = InteractiveReader::new(&self.ctx.config)?;
         self.run_loop(&mut reader)
     }
 
     /// Run the shell loop from a [`BufRead`] source.
-    ///
-    /// This is the entry point for script / batch mode; interactive use goes
-    /// through [`Shell::run_interactive`]. Prompts are suppressed; diagnostics
-    /// go to the process's real stderr.
     pub fn run_script(&mut self, source: &mut dyn BufRead) -> miette::Result<ExitCode> {
         let mut reader = ScriptReader::new(source);
         self.run_loop(&mut reader)
     }
 
     /// Shared REPL loop driven by any [`LineReader`].
-    ///
-    /// Each call to [`LineReader::read_line`] returns a complete logical
-    /// command — accumulation and continuation are handled inside the reader.
     fn run_loop(&mut self, reader: &mut dyn LineReader) -> miette::Result<ExitCode> {
         let mut err = std::io::stderr();
         loop {
             match reader.read_line()? {
                 LineInput::Eof => return Ok(ExitCode::SUCCESS),
                 LineInput::Interrupted => continue,
-                LineInput::Line(bytes) => {
-                    let input = Input::from_vec(bytes);
-                    if input.is_effectively_empty() {
+                LineInput::Lexer(lexer) => {
+                    if lexer.raw_bytes().iter().all(|b| b.is_ascii_whitespace()) {
                         continue;
                     }
-                    if let Some(exit_code) = self.step(input, &mut err)? {
+                    if let Some(exit_code) = self.step(lexer, &mut err)? {
                         return Ok(exit_code);
                     }
                 }
@@ -91,16 +77,18 @@ impl Shell {
 
     /// Parse and execute one logical input unit. Returns `Some(code)` when the
     /// shell should exit, `None` to continue the REPL loop.
-    ///
-    /// Callers guarantee `input` is not effectively empty.
-    fn step(&mut self, input: Input, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
-        let stages = resolver::resolve(parser::parse(&input));
+    fn step(&mut self, lexer: Lexer, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
+        let raw = lexer.raw_bytes().to_owned();
+        let stages = resolver::resolve(Parser::new(lexer));
         match executor::execute_pipeline(stages, &mut self.ctx) {
             Ok(Some(exit_code)) => return Ok(Some(exit_code)),
             Ok(None) => {}
             Err(e) => {
                 let fatal = e.is_fatal();
-                writeln!(err, "{:?}", miette::Report::new(e)).into_diagnostic()?;
+                let src =
+                    miette::NamedSource::new("<input>", String::from_utf8_lossy(&raw).into_owned());
+                writeln!(err, "{:?}", miette::Report::new(e).with_source_code(src))
+                    .into_diagnostic()?;
                 if fatal {
                     return Ok(Some(ExitCode::FAILURE));
                 }

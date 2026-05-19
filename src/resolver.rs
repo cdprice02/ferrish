@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use is_executable::IsExecutable;
 
-use crate::arg::{Arg, Args};
 use crate::command::CommandKind;
 use crate::command::builtin::{BuiltInCommand, BuiltInName};
 use crate::command::executable::ExecutableCommand;
@@ -10,14 +9,15 @@ use crate::env::get_path_dirs;
 use crate::error::{ShellError, ShellResult};
 use crate::parser::UnresolvedStage;
 use crate::redirect::{StderrRedirection, StdoutRedirection};
+use crate::word::Word;
 
-/// A resolved command: its kind (built-in or executable) plus the original word arg.
+/// A resolved command: its kind (built-in or executable) plus the original word.
 #[derive(Debug)]
 pub struct ResolvedCommand {
     /// The resolved command kind.
     pub kind: CommandKind,
     /// The original command word as it appeared in the input.
-    pub word: Arg,
+    pub word: Word,
 }
 
 /// One stage of a pipeline after command resolution.
@@ -26,7 +26,7 @@ pub struct ResolvedStage {
     /// The resolved command.
     pub command: ResolvedCommand,
     /// Arguments to pass to the command.
-    pub args: Args,
+    pub args: Vec<Word>,
     /// Optional stdout redirection for this stage.
     pub stdout_redirect: Option<StdoutRedirection>,
     /// Optional stderr redirection for this stage.
@@ -35,12 +35,20 @@ pub struct ResolvedStage {
 
 /// Lazy resolver iterator produced by [`resolve`].
 ///
-/// Generic over any upstream stage iterator `I`. Resolves each
-/// [`UnresolvedStage`] to a [`ResolvedStage`] on demand. Errors from
-/// parsing or resolution are forwarded as `Err` items; the iterator
-/// yields `None` once the upstream parser is exhausted.
+/// Resolves each [`UnresolvedStage`] to a [`ResolvedStage`] on demand.
+/// Errors from parsing or resolution are forwarded as `Err` items.
 pub struct Resolver<I> {
     inner: I,
+}
+
+impl<I> Resolver<I>
+where
+    I: Iterator<Item = ShellResult<UnresolvedStage>>,
+{
+    /// Create a resolver wrapping any unresolved-stage iterator.
+    pub fn new(inner: I) -> Self {
+        Self { inner }
+    }
 }
 
 impl<I> Iterator for Resolver<I>
@@ -59,7 +67,7 @@ pub fn resolve<I>(stages: I) -> Resolver<I>
 where
     I: Iterator<Item = ShellResult<UnresolvedStage>>,
 {
-    Resolver { inner: stages }
+    Resolver::new(stages)
 }
 
 fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
@@ -77,7 +85,7 @@ fn resolve_stage(stage: UnresolvedStage) -> ShellResult<ResolvedStage> {
 ///
 /// Returns `Some(kind)` if the word resolves to a built-in or PATH executable,
 /// `None` if it is empty, non-ASCII, or not found anywhere on PATH.
-pub fn lookup(word: &Arg) -> Option<CommandKind> {
+pub fn lookup(word: &Word) -> Option<CommandKind> {
     let bytes = word.as_bytes();
 
     if bytes.is_empty() || !bytes.is_ascii() {
@@ -92,8 +100,6 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
 
     #[cfg(windows)]
     let extensions = if name.contains('.') {
-        // Name already has an extension — probe only the bare name, matching
-        // cmd.exe behavior (PATHEXT iteration is skipped when an extension is present).
         vec![]
     } else {
         path_extensions()
@@ -119,15 +125,12 @@ pub fn lookup(word: &Arg) -> Option<CommandKind> {
 }
 
 /// Returns the executable extensions to probe on Windows.
-///
-/// Reads `PATHEXT` from the environment; falls back to the standard set if unset.
 #[cfg(windows)]
 fn path_extensions() -> Vec<String> {
     let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     parse_pathext(&raw)
 }
 
-/// Parses a `PATHEXT`-style semicolon-delimited string into a lowercased extension list.
 #[cfg(windows)]
 fn parse_pathext(raw: &str) -> Vec<String> {
     raw.split(';')
@@ -136,23 +139,24 @@ fn parse_pathext(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn resolve_command(word: &Arg) -> ShellResult<CommandKind> {
+fn resolve_command(word: &Word) -> ShellResult<CommandKind> {
     lookup(word).ok_or_else(|| ShellError::CommandNotFound {
         name: String::from_utf8_lossy(word.as_bytes()).into_owned(),
         span: word.span(),
-        src: word.src(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::Input;
-    use crate::parser;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
 
     fn resolve_raw(raw: &[u8]) -> ShellResult<Vec<ResolvedStage>> {
-        let input = Input::new(raw);
-        resolve(parser::parse(&input)).collect()
+        let mut lexer = Lexer::new();
+        lexer.push(raw);
+        lexer.finalize();
+        resolve(Parser::new(lexer)).collect()
     }
 
     fn resolve_single(raw: &[u8]) -> ResolvedStage {
@@ -194,7 +198,6 @@ mod tests {
 
     #[test]
     fn fails_fast_on_first_unknown_in_pipeline() {
-        // Second stage is unknown; error names it, not the first stage.
         let err = resolve_raw(b"echo foo | unknown_cmd_xyz").unwrap_err();
         if let ShellError::CommandNotFound { name, .. } = err {
             assert_eq!(name, "unknown_cmd_xyz");
