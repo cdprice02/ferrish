@@ -149,14 +149,13 @@ fn resolve_command(word: &Word) -> ShellResult<CommandKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::scanner::Scanner;
 
     fn resolve_raw(raw: &[u8]) -> ShellResult<Vec<ResolvedStage>> {
-        let mut lexer = Lexer::new();
-        lexer.push(raw);
-        lexer.finalize();
-        resolve(Parser::new(lexer)).collect()
+        let mut sc = Scanner::new();
+        sc.push(raw);
+        resolve(Parser::new(sc.finalize())).collect()
     }
 
     fn resolve_single(raw: &[u8]) -> ResolvedStage {

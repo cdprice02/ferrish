@@ -1,6 +1,6 @@
 use crate::error::ShellError;
-use crate::lexer::{Lexer, Token, TokenKind};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
+use crate::tokenizer::{Token, TokenKind, Tokenizer};
 use crate::word::Word;
 use std::iter::Peekable;
 
@@ -32,13 +32,13 @@ pub struct ParserState {
     pub segment_has_tokens: bool,
 }
 
-/// Lazy pipeline iterator backed by a [`Lexer`].
+/// Lazy pipeline iterator backed by a [`Tokenizer`].
 ///
 /// Yields one [`UnresolvedStage`] per `|`-separated segment. An empty
-/// segment, unclosed quote, or other lex error is reported as a final
+/// segment, unclosed quote, or other scan error is reported as a final
 /// `Err` item; after that the iterator returns `None`.
 pub struct Parser {
-    lexer: Peekable<Lexer>,
+    tokens: Peekable<Tokenizer>,
     state: ParserState,
     pending: Vec<Token>,
     last_pipe: Option<Token>,
@@ -46,13 +46,10 @@ pub struct Parser {
 }
 
 impl Parser {
-    /// Create a parser that pulls tokens from `lexer`.
-    ///
-    /// `lexer` must have been finalized by the caller before construction so
-    /// that any trailing word and unclosed-quote errors are already queued.
-    pub fn new(lexer: Lexer) -> Self {
+    /// Create a parser that pulls tokens from `tokenizer`.
+    pub fn new(tokenizer: Tokenizer) -> Self {
         Self {
-            lexer: lexer.peekable(),
+            tokens: tokenizer.peekable(),
             state: ParserState::default(),
             pending: Vec::new(),
             last_pipe: None,
@@ -75,7 +72,7 @@ impl Iterator for Parser {
         }
 
         loop {
-            match self.lexer.next() {
+            match self.tokens.next() {
                 None => {
                     self.done = true;
                     if !self.state.segment_has_tokens {
@@ -201,14 +198,14 @@ fn classify_redirect(word: &Word) -> Option<(bool, RedirectMode)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{Lexer, QuoteKind};
+    use crate::scanner::Scanner;
+    use crate::tokenizer::QuoteKind;
     use proptest::prelude::*;
 
     fn parse_raw(raw: &[u8]) -> Result<Vec<UnresolvedStage>, ShellError> {
-        let mut lexer = Lexer::new();
-        lexer.push(raw);
-        lexer.finalize();
-        Parser::new(lexer).collect()
+        let mut sc = Scanner::new();
+        sc.push(raw);
+        Parser::new(sc.finalize()).collect()
     }
 
     fn parse_single(raw: &[u8]) -> UnresolvedStage {

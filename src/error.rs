@@ -1,7 +1,7 @@
 use std::process::ExitStatus;
 
 use crate::command::CommandKind;
-use crate::lexer::QuoteKind;
+use crate::tokenizer::QuoteKind;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 

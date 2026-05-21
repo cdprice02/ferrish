@@ -7,10 +7,10 @@ use crate::{
     ctx::{ShellConfig, ShellCtx},
     executor,
     exit::ExitCode,
-    lexer::Lexer,
     line_reader::{InteractiveReader, LineInput, LineReader, ScriptReader},
     parser::Parser,
     resolver,
+    tokenizer::Tokenizer,
 };
 
 /// Byte-backed source code for miette diagnostics.
@@ -107,11 +107,15 @@ impl Shell {
             match reader.read_line()? {
                 LineInput::Eof => return Ok(ExitCode::SUCCESS),
                 LineInput::Interrupted => continue,
-                LineInput::Lexer(lexer) => {
-                    if lexer.raw_bytes().iter().all(|b| b.is_ascii_whitespace()) {
+                LineInput::Command(tokenizer) => {
+                    if tokenizer
+                        .raw_bytes()
+                        .iter()
+                        .all(|b| b.is_ascii_whitespace())
+                    {
                         continue;
                     }
-                    if let Some(exit_code) = self.step(lexer, &mut err)? {
+                    if let Some(exit_code) = self.step(tokenizer, &mut err)? {
                         return Ok(exit_code);
                     }
                 }
@@ -121,9 +125,13 @@ impl Shell {
 
     /// Parse and execute one logical input unit. Returns `Some(code)` when the
     /// shell should exit, `None` to continue the REPL loop.
-    fn step(&mut self, lexer: Lexer, err: &mut dyn Write) -> miette::Result<Option<ExitCode>> {
-        let raw = lexer.raw_bytes_shared();
-        let stages = resolver::resolve(Parser::new(lexer));
+    fn step(
+        &mut self,
+        tokenizer: Tokenizer,
+        err: &mut dyn Write,
+    ) -> miette::Result<Option<ExitCode>> {
+        let raw = tokenizer.raw_bytes_shared();
+        let stages = resolver::resolve(Parser::new(tokenizer));
         match executor::execute_pipeline(stages, &mut self.ctx) {
             Ok(Some(exit_code)) => return Ok(Some(exit_code)),
             Ok(None) => {}
