@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io::BufRead;
+use std::sync::{Arc, Mutex};
 
 use miette::IntoDiagnostic as _;
 use reedline::{
@@ -8,15 +9,16 @@ use reedline::{
 };
 
 use crate::ctx::ShellConfig;
-use crate::lexer::{self, LexerState};
+use crate::scanner::Scanner;
+use crate::tokenizer::Tokenizer;
 
 /// A single logical input unit returned by a line-reading source.
 ///
 /// Both [`InteractiveReader`] and [`ScriptReader`] accumulate physical lines
 /// internally and only return once a complete shell command is ready.
 pub enum LineInput {
-    /// A complete logical command, trailing `\n` included.
-    Line(Vec<u8>),
+    /// A finalized [`Tokenizer`] containing one complete logical command.
+    Command(Tokenizer),
     /// End of input (EOF or Ctrl+D).
     Eof,
     /// User interrupted the current input (Ctrl+C); only interactive readers yield this.
@@ -24,44 +26,42 @@ pub enum LineInput {
 }
 
 /// A source of complete logical shell commands, one per call.
-///
-/// Implementations handle their own line accumulation and continuation logic
-/// internally. Callers receive complete, ready-to-parse commands.
 pub trait LineReader {
     /// Read the next complete logical command.
     fn read_line(&mut self) -> miette::Result<LineInput>;
 }
 
-/// Determines whether accumulated input forms a complete shell command.
+/// Shared scanner cache between [`CachingValidator`] and [`InteractiveReader`].
 ///
-/// Implements [`reedline::Validator`] so it can be attached to [`Reedline`] for
-/// interactive multiline support, and is used directly by [`ScriptReader`] for
-/// the same completion checks. Both paths share the same grammar logic through
-/// this struct rather than maintaining parallel implementations.
-///
-/// This is also the intended composition point for future features that need
-/// to understand shell-grammar completeness: the syntax highlighter, the
-/// language server, and other reedline plugins will all delegate here.
-pub struct ShellValidator;
+/// reedline calls `validate()` on every Enter key press before signaling
+/// `Success`. The cache stores the [`Scanner`] built during validation so
+/// `read_line` can retrieve it rather than building a second one.
+type ScannerCache = Arc<Mutex<Option<Scanner>>>;
 
-impl Validator for ShellValidator {
+/// reedline [`Validator`] that also caches the [`Scanner`] it builds.
+///
+/// Because `validate()` receives exactly the same buffer string that
+/// reedline will pass to `Signal::Success`, the cached [`Scanner`] is
+/// already populated with the right bytes when `read_line` drains it.
+struct CachingValidator {
+    cache: ScannerCache,
+}
+
+impl Validator for CachingValidator {
     fn validate(&self, line: &str) -> ValidationResult {
-        let bytes = line.as_bytes();
-        if lexer::needs_continuation(bytes) {
-            return ValidationResult::Incomplete;
+        let mut sc = Scanner::new();
+        sc.push(line.as_bytes());
+        let needs_more = sc.needs_continuation();
+        *self.cache.lock().unwrap() = Some(sc);
+        if needs_more {
+            ValidationResult::Incomplete
+        } else {
+            ValidationResult::Complete
         }
-        // Trailing backslash (outside quotes, since needs_continuation would
-        // have fired for unclosed quotes) means backslash-newline continuation.
-        if bytes.trim_ascii_end().ends_with(b"\\") {
-            return ValidationResult::Incomplete;
-        }
-        ValidationResult::Complete
     }
 }
 
-/// Stores the prompt strings displayed by [`InteractiveReader`] and implements
-/// reedline's [`Prompt`] trait so both the primary prompt and the continuation
-/// prompt are drawn from the shell's configuration.
+/// Stores the prompt strings displayed by [`InteractiveReader`].
 struct ShellPrompt {
     prompt: String,
     cont_prompt: String,
@@ -91,39 +91,35 @@ impl Prompt for ShellPrompt {
 
 /// Interactive line reader backed by reedline.
 ///
-/// Accumulates physical lines internally via [`ShellValidator`] and returns
-/// complete logical commands. Backslash-newline continuations are joined before
-/// the command is returned. History is managed by reedline and saved
-/// automatically on each successful line.
-///
-/// This struct is the composition point for reedline plugins — future
-/// `Highlighter`, `Completer`, and `Hinter` implementations wire in here via
-/// builder methods on [`Reedline::create`]. All such plugins should delegate
-/// into the shared lexer/parser rather than forking grammar logic.
+/// reedline accumulates physical lines (with [`CachingValidator`] gating
+/// multiline continuation). When the validator signals complete input, the
+/// cached [`Scanner`] is retrieved and finalized — no second byte scan.
 pub struct InteractiveReader {
     editor: Reedline,
     prompt: ShellPrompt,
+    cache: ScannerCache,
 }
 
 impl InteractiveReader {
     /// Create a new interactive reader using prompts and config from `config`.
     pub fn new(config: &ShellConfig) -> miette::Result<Self> {
-        let mut editor = Reedline::create().with_validator(Box::new(ShellValidator));
+        let cache: ScannerCache = Arc::new(Mutex::new(None));
+        let validator = CachingValidator {
+            cache: Arc::clone(&cache),
+        };
+        let mut editor = Reedline::create().with_validator(Box::new(validator));
         if let Some(ref path) = config.history_path {
             let history =
                 FileBackedHistory::with_file(config.max_history, path.clone()).into_diagnostic()?;
             editor = editor.with_history(Box::new(history));
         }
-        // Future plugin hooks (all share the same lexer/parser as the REPL):
-        //   .with_highlighter(Box::new(ShellHighlighter))
-        //   .with_completer(Box::new(ShellCompleter))
-        //   .with_hinter(Box::new(DefaultHinter::default()))
         Ok(Self {
             editor,
             prompt: ShellPrompt {
                 prompt: config.prompt.clone(),
                 cont_prompt: config.continuation_prompt.clone(),
             },
+            cache,
         })
     }
 }
@@ -131,15 +127,18 @@ impl InteractiveReader {
 impl LineReader for InteractiveReader {
     fn read_line(&mut self) -> miette::Result<LineInput> {
         match self.editor.read_line(&self.prompt).into_diagnostic()? {
-            Signal::Success(s) => {
-                let mut bytes = join_backslash_newlines(s.into_bytes());
-                bytes.push(b'\n');
-                Ok(LineInput::Line(bytes))
+            Signal::Success(_) => {
+                // Drain the scanner the validator already built — zero second scan.
+                let sc = self
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("validator always populates cache before Success");
+                Ok(LineInput::Command(sc.finalize()))
             }
             Signal::CtrlC => Ok(LineInput::Interrupted),
             Signal::CtrlD => Ok(LineInput::Eof),
-            // HostCommand and ExternalBreak are not issued in the default
-            // configuration; treat them as interrupts so the REPL continues.
             _ => Ok(LineInput::Interrupted),
         }
     }
@@ -147,9 +146,9 @@ impl LineReader for InteractiveReader {
 
 /// Non-interactive line reader backed by any [`BufRead`] source.
 ///
-/// Accumulates physical lines using the same quote-state and continuation
-/// logic as [`ShellValidator`], returning complete logical commands. Prompts
-/// are suppressed. Never yields [`LineInput::Interrupted`].
+/// Feeds raw bytes into a [`Scanner`] line by line. Backslash-newline
+/// continuation and quote continuation are both handled by the scanner
+/// itself via [`Scanner::needs_continuation`].
 pub struct ScriptReader<'a> {
     reader: &'a mut dyn BufRead,
 }
@@ -163,66 +162,42 @@ impl<'a> ScriptReader<'a> {
 
 impl LineReader for ScriptReader<'_> {
     fn read_line(&mut self) -> miette::Result<LineInput> {
-        let mut acc: Vec<u8> = Vec::new();
-        let mut lex_state = LexerState::default();
+        let mut sc = Scanner::new();
 
         loop {
-            let mut line = Vec::new();
-            if self.reader.read_until(b'\n', &mut line).into_diagnostic()? == 0 {
-                if acc.is_empty() {
+            let mut raw = Vec::new();
+            if self.reader.read_until(b'\n', &mut raw).into_diagnostic()? == 0 {
+                if sc.raw_bytes().iter().all(|b| b.is_ascii_whitespace()) {
                     return Ok(LineInput::Eof);
                 }
-                if !acc.ends_with(b"\n") {
-                    acc.push(b'\n');
-                }
-                return Ok(LineInput::Line(acc));
-            }
-            if line.ends_with(b"\n") {
-                line.pop();
-            }
-            if line.ends_with(b"\r") {
-                line.pop();
+                return Ok(LineInput::Command(sc.finalize()));
             }
 
-            lex_state.scan_bytes(&line);
-            lex_state.scan_bytes(b"\n");
+            if raw.ends_with(b"\n") {
+                raw.pop();
+            }
+            if raw.ends_with(b"\r") {
+                raw.pop();
+            }
 
-            if lex_state.needs_continuation() {
-                acc.extend_from_slice(&line);
-                acc.push(b'\n');
+            let trailing_backslash = raw.ends_with(b"\\");
+
+            sc.push(&raw);
+            sc.push(b"\n");
+
+            if trailing_backslash && !sc.needs_continuation() {
+                // Unquoted \<LF> continuation: scanner consumed both chars,
+                // needs_continuation() is now false — but we must read another
+                // line to complete the logical command.
                 continue;
             }
 
-            if line.ends_with(b"\\") {
-                acc.extend_from_slice(&line[..line.len() - 1]);
-                continue;
+            if !sc.needs_continuation() {
+                return Ok(LineInput::Command(sc.finalize()));
             }
-
-            acc.extend_from_slice(&line);
-            acc.push(b'\n');
-            return Ok(LineInput::Line(acc));
+            // Inside an open quote — read more physical lines.
         }
     }
-}
-
-/// Strip backslash-newline pairs from `bytes`, joining continuation lines.
-///
-/// Operates on the raw buffer returned by reedline after [`ShellValidator`]
-/// has confirmed the input is complete. At that point any remaining `\<LF>`
-/// pairs are outside unclosed quotes (the validator would have returned
-/// `Incomplete` otherwise), so a simple byte scan is correct.
-fn join_backslash_newlines(bytes: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-            i += 2;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -231,105 +206,71 @@ mod tests {
 
     use super::*;
 
-    // --- ShellValidator ---
+    // --- CachingValidator ---
 
     #[test]
     fn validator_complete_for_simple_command() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator {
+            cache: Arc::clone(&cache),
+        };
         assert!(matches!(
-            ShellValidator.validate("echo hello"),
+            v.validate("echo hello"),
             ValidationResult::Complete
         ));
+        assert!(
+            cache.lock().unwrap().is_some(),
+            "cache populated on validate"
+        );
     }
 
     #[test]
     fn validator_incomplete_for_unclosed_single_quote() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator { cache };
         assert!(matches!(
-            ShellValidator.validate("echo 'hello"),
+            v.validate("echo 'hello"),
             ValidationResult::Incomplete
         ));
     }
 
     #[test]
     fn validator_incomplete_for_unclosed_double_quote() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator { cache };
         assert!(matches!(
-            ShellValidator.validate("echo \"hello"),
+            v.validate("echo \"hello"),
             ValidationResult::Incomplete
         ));
     }
 
     #[test]
     fn validator_complete_after_multiline_single_quote() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator { cache };
         assert!(matches!(
-            ShellValidator.validate("echo 'hello\nworld'"),
+            v.validate("echo 'hello\nworld'"),
             ValidationResult::Complete
         ));
     }
 
     #[test]
     fn validator_incomplete_for_trailing_backslash() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator { cache };
         assert!(matches!(
-            ShellValidator.validate("echo foo\\"),
+            v.validate("echo foo\\"),
             ValidationResult::Incomplete
         ));
     }
 
     #[test]
     fn validator_complete_after_backslash_continuation() {
+        let cache = Arc::new(Mutex::new(None));
+        let v = CachingValidator { cache };
         assert!(matches!(
-            ShellValidator.validate("echo foo\\\nbar"),
+            v.validate("echo foo\\\nbar"),
             ValidationResult::Complete
         ));
-    }
-
-    #[test]
-    fn validator_incomplete_trailing_backslash_with_trailing_spaces() {
-        // trim_ascii_end strips trailing spaces before the backslash check so that
-        // trailing whitespace after `\` doesn't mask a continuation.
-        assert!(matches!(
-            ShellValidator.validate("echo foo\\   "),
-            ValidationResult::Incomplete
-        ));
-    }
-
-    // --- join_backslash_newlines ---
-
-    #[test]
-    fn join_removes_backslash_newline_pair() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\\nbar\n".to_vec()),
-            b"echo foobar\n"
-        );
-    }
-
-    #[test]
-    fn join_no_op_without_continuation() {
-        assert_eq!(
-            join_backslash_newlines(b"echo hello\n".to_vec()),
-            b"echo hello\n"
-        );
-    }
-
-    #[test]
-    fn join_multiple_continuations() {
-        assert_eq!(
-            join_backslash_newlines(b"echo a\\\nb\\\nc\n".to_vec()),
-            b"echo abc\n"
-        );
-    }
-
-    #[test]
-    fn join_preserves_backslash_not_before_newline() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\bar\n".to_vec()),
-            b"echo foo\\bar\n"
-        );
-    }
-
-    #[test]
-    fn join_preserves_trailing_backslash_at_end_of_buffer() {
-        assert_eq!(
-            join_backslash_newlines(b"echo foo\\".to_vec()),
-            b"echo foo\\"
-        );
     }
 }

@@ -4,7 +4,6 @@ use std::thread::{self, JoinHandle};
 
 use crate::{
     CommandKind,
-    arg::Args,
     command::builtin::{BuiltInCommand, BuiltInName},
     ctx::ShellCtx,
     error::{ShellError, ShellResult},
@@ -12,6 +11,7 @@ use crate::{
     fs,
     redirect::{RedirectMode, StderrRedirection, StdoutRedirection},
     resolver::{self, ResolvedStage},
+    word::Word,
 };
 
 /// Open a redirect target file according to its [`RedirectMode`].
@@ -71,7 +71,7 @@ enum StageHandle {
 /// with no intermediate buffering.
 fn launch_stage(
     command: CommandKind,
-    args: Args,
+    args: Vec<Word>,
     stdin: Option<PipeReader>,
     stdout: StageOutput,
     stderr: StageError,
@@ -147,7 +147,7 @@ fn launch_stage(
 /// commands that are not part of a multi-command pipeline.
 pub fn execute(
     command: CommandKind,
-    args: Args,
+    args: Vec<Word>,
     ctx: &mut ShellCtx,
     stdout_redirect: Option<StdoutRedirection>,
     stderr_redirect: Option<StderrRedirection>,
@@ -370,7 +370,7 @@ fn exit_status_is_sigpipe(_: &std::process::ExitStatus) -> bool {
 
 fn execute_builtin(
     builtin: &BuiltInCommand,
-    args: Args,
+    args: Vec<Word>,
     stdin: Option<PipeReader>,
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -405,7 +405,7 @@ fn execute_builtin(
     Ok(None)
 }
 
-fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
+fn execute_cd(args: Vec<Word>, ctx: &mut ShellCtx) -> ShellResult<()> {
     let new_dir = if let Some(target) = args.first() {
         let target_path: std::path::PathBuf = target.into();
         // Tilde expansion requires HOME; fail here so `cd ~` and `cd` both
@@ -418,13 +418,11 @@ fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
             return Err(ShellError::FileNotFound {
                 name: target.to_string(),
                 span: target.span(),
-                src: target.src(),
             });
         } else if !path.is_dir() {
             return Err(ShellError::NotADirectory {
                 name: target.to_string(),
                 span: target.span(),
-                src: target.src(),
             });
         }
         path
@@ -439,7 +437,7 @@ fn execute_cd(args: Args, ctx: &mut ShellCtx) -> ShellResult<()> {
     Ok(())
 }
 
-fn execute_echo(args: Args, out: &mut dyn Write) -> ShellResult<()> {
+fn execute_echo(args: Vec<Word>, out: &mut dyn Write) -> ShellResult<()> {
     writeln!(
         out,
         "{}",
@@ -451,7 +449,7 @@ fn execute_echo(args: Args, out: &mut dyn Write) -> ShellResult<()> {
     Ok(())
 }
 
-fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
+fn execute_type(args: Vec<Word>, out: &mut dyn Write) -> ShellResult<()> {
     if args.is_empty() {
         return Err(ShellError::MissingOperand);
     }
@@ -472,7 +470,6 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
             return Err(ShellError::CommandNotFound {
                 name: arg.to_string(),
                 span: arg.span(),
-                src: arg.src(),
             });
         }
     }
@@ -480,13 +477,13 @@ fn execute_type(args: Args, out: &mut dyn Write) -> ShellResult<()> {
     Ok(())
 }
 
-fn execute_pwd(_args: Args, out: &mut dyn Write, ctx: &ShellCtx) -> ShellResult<()> {
+fn execute_pwd(_args: Vec<Word>, out: &mut dyn Write, ctx: &ShellCtx) -> ShellResult<()> {
     writeln!(out, "{}", ctx.cwd.display())?;
     Ok(())
 }
 
 fn execute_cat(
-    args: Args,
+    args: Vec<Word>,
     stdin: Option<PipeReader>,
     out: &mut dyn Write,
     err: &mut dyn Write,

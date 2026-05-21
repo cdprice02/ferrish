@@ -1,18 +1,14 @@
-use bytes::Bytes;
-use miette::SourceSpan;
-
-use crate::arg::{Arg, Args};
 use crate::error::ShellError;
-use crate::input::{Input, InputSource};
-use crate::lexer::{Lexer, Token, TokenKind, lex};
 use crate::redirect::{RedirectMode, StderrRedirection, StdoutRedirection};
+use crate::tokenizer::{Token, TokenKind, Tokenizer};
+use crate::word::Word;
 use std::iter::Peekable;
 
 /// The command position of a pipeline stage before resolution.
 #[derive(Debug)]
 pub struct UnresolvedCommand {
-    /// The argument representing the command word.
-    pub word: Arg,
+    /// The word representing the command.
+    pub word: Word,
 }
 
 /// One stage of a pipeline before command resolution.
@@ -21,7 +17,7 @@ pub struct UnresolvedStage {
     /// The command to run.
     pub command: UnresolvedCommand,
     /// Arguments to pass to the command.
-    pub args: Args,
+    pub args: Vec<Word>,
     /// Optional stdout redirection for this stage.
     pub stdout_redirect: Option<StdoutRedirection>,
     /// Optional stderr redirection for this stage.
@@ -29,47 +25,45 @@ pub struct UnresolvedStage {
 }
 
 /// Observable state of the parser at any point during iteration.
-///
-/// Mirrors [`LexerState`] in structure: flags that drive the state machine are
-/// exposed here so callers can query completeness without re-running a full
-/// parse pass. New state fields (nesting depth, subshell, etc.) are added here
-/// as the shell grammar grows.
-///
-/// [`LexerState`]: crate::lexer::LexerState
 #[derive(Clone, Debug, Default)]
 pub struct ParserState {
     /// Whether the segment currently being accumulated has received at least
-    /// one token. `false` at the start of a new segment or at the start of
-    /// input; `true` once a non-Pipe token arrives.
+    /// one token.
     pub segment_has_tokens: bool,
 }
 
-/// Lazy pipeline iterator produced by [`parse`].
+/// Lazy pipeline iterator backed by a [`Tokenizer`].
 ///
-/// Yields one [`UnresolvedStage`] per `|`-separated segment of the input as the
-/// resolver pulls them. An empty segment, an unclosed quote, or any other lex
-/// error is reported as a final `Err` item; after that the iterator returns
-/// `None`. The parser's current state is always accessible via [`Parser::state`].
-pub struct Parser<'a> {
-    lexer: Peekable<Lexer<'a>>,
-    src: InputSource,
+/// Yields one [`UnresolvedStage`] per `|`-separated segment. An empty
+/// segment, unclosed quote, or other scan error is reported as a final
+/// `Err` item; after that the iterator returns `None`.
+pub struct Parser {
+    tokens: Peekable<Tokenizer>,
     state: ParserState,
-    /// Tokens accumulated for the segment currently being built.
     pending: Vec<Token>,
-    /// The Pipe token that closed the last emitted stage; used to report a
-    /// trailing-empty-segment error when the lexer ends with nothing after it.
     last_pipe: Option<Token>,
     done: bool,
 }
 
-impl<'a> Parser<'a> {
-    /// The parser's current state — readable at any point during iteration.
+impl Parser {
+    /// Create a parser that pulls tokens from `tokenizer`.
+    pub fn new(tokenizer: Tokenizer) -> Self {
+        Self {
+            tokens: tokenizer.peekable(),
+            state: ParserState::default(),
+            pending: Vec::new(),
+            last_pipe: None,
+            done: false,
+        }
+    }
+
+    /// The parser's current state.
     pub fn state(&self) -> &ParserState {
         &self.state
     }
 }
 
-impl<'a> Iterator for Parser<'a> {
+impl Iterator for Parser {
     type Item = Result<UnresolvedStage, ShellError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -78,15 +72,12 @@ impl<'a> Iterator for Parser<'a> {
         }
 
         loop {
-            match self.lexer.next() {
+            match self.tokens.next() {
                 None => {
                     self.done = true;
                     if !self.state.segment_has_tokens {
                         if let Some(pipe) = self.last_pipe.take() {
-                            return Some(Err(ShellError::EmptyPipelineSegment {
-                                span: pipe.span,
-                                src: self.src.clone(),
-                            }));
+                            return Some(Err(ShellError::EmptyPipelineSegment { span: pipe.span }));
                         }
                         return None;
                     }
@@ -103,7 +94,6 @@ impl<'a> Iterator for Parser<'a> {
                             self.done = true;
                             return Some(Err(ShellError::EmptyPipelineSegment {
                                 span: token.span,
-                                src: self.src.clone(),
                             }));
                         }
                         let tokens = std::mem::take(&mut self.pending);
@@ -120,31 +110,23 @@ impl<'a> Iterator for Parser<'a> {
     }
 }
 
-/// Parse `input` into a lazy pipeline iterator.
-///
-/// Tokens are consumed from the lexer on demand as the caller pulls stages.
-/// An unclosed quote, empty pipeline segment, or other error is reported as
-/// a final `Err` item from the iterator.
-pub fn parse(input: &Input) -> Parser<'_> {
-    Parser {
-        lexer: lex(input).peekable(),
-        src: input.as_source(),
-        state: ParserState::default(),
-        pending: Vec::new(),
-        last_pipe: None,
-        done: false,
+/// Map a non-Pipe token to a [`Word`].
+fn token_to_word(token: Token) -> Word {
+    match token.kind {
+        TokenKind::Word(bytes) => Word {
+            bytes,
+            span: token.span,
+        },
+        TokenKind::Pipe => unreachable!("pipe tokens stripped before build_stage"),
     }
 }
 
-/// Group a segment's tokens into `Arg` values and extract redirect operators.
+/// Build a pipeline stage from an accumulated segment's tokens.
 fn build_stage(tokens: Vec<Token>) -> Result<UnresolvedStage, ShellError> {
-    let grouped = group_into_args(tokens);
-
-    let mut iter = grouped.into_iter();
-    let command_word = iter.next().expect("empty segment checked above");
-    let rest: Vec<Arg> = iter.collect();
+    let mut words = tokens.into_iter().map(token_to_word);
+    let command_word = words.next().expect("empty segment checked above");
+    let rest: Vec<Word> = words.collect();
     let (args, stdout_redirect, stderr_redirect) = extract_redirects(rest);
-
     Ok(UnresolvedStage {
         command: UnresolvedCommand { word: command_word },
         args,
@@ -153,88 +135,30 @@ fn build_stage(tokens: Vec<Token>) -> Result<UnresolvedStage, ShellError> {
     })
 }
 
-/// Group a sequence of non-Pipe tokens into `Arg` values by span adjacency.
+/// Scan `args` for redirect operators and return the remaining args plus
+/// any stdout and stderr redirections.
 ///
-/// Tokens are adjacent when the next token starts exactly where the previous
-/// one ends (no whitespace gap). Adjacent tokens are concatenated into a single
-/// `Arg`; non-adjacent tokens start a new `Arg`.
-fn group_into_args(tokens: Vec<Token>) -> Vec<Arg> {
-    let mut groups: Vec<Vec<Token>> = Vec::new();
-    let mut current: Vec<Token> = Vec::new();
-
-    for token in tokens {
-        let adjacent = current
-            .last()
-            .is_some_and(|last| token.span.offset() == last.span.offset() + last.span.len());
-        if adjacent {
-            current.push(token);
-        } else {
-            if !current.is_empty() {
-                groups.push(std::mem::take(&mut current));
-            }
-            current.push(token);
-        }
-    }
-    if !current.is_empty() {
-        groups.push(current);
-    }
-
-    groups.into_iter().map(tokens_to_arg).collect()
-}
-
-/// Combine a non-empty group of adjacent tokens into a single `Arg`.
-fn tokens_to_arg(group: Vec<Token>) -> Arg {
-    debug_assert!(!group.is_empty());
-
-    let mut combined: Vec<u8> = Vec::new();
-    for token in &group {
-        let content = match &token.kind {
-            TokenKind::Word(b) | TokenKind::SingleQuoted(b) | TokenKind::DoubleQuoted(b) => {
-                b.as_ref()
-            }
-            TokenKind::Pipe => unreachable!("pipe tokens are stripped before grouping"),
-        };
-        combined.extend_from_slice(content);
-    }
-
-    let first = &group[0];
-    let last = &group[group.len() - 1];
-    let span = SourceSpan::from((
-        first.span.offset(),
-        last.span.offset() + last.span.len() - first.span.offset(),
-    ));
-
-    Arg {
-        bytes: Bytes::from(combined),
-        span,
-        src: first.src.clone(),
-        tokens: group,
-    }
-}
-
-/// Scan `args` for unquoted redirect operators, returning the remaining args
-/// plus any stdout and stderr redirections.
+/// An arg is a redirect operator only when `span.len() == bytes.len()` —
+/// meaning pure unquoted, unescaped bytes — and those bytes match a known
+/// operator spelling. Mixed-quoted or backslash-escaped look-alikes have
+/// `span.len() > bytes.len()` and are never treated as operators.
 ///
-/// An arg is a redirect operator only if it consists of exactly one `Word`
-/// token whose bytes match `>`, `1>`, `>>`, `1>>`, `2>`, or `2>>`. Mixed-quoted
-/// args (e.g. `1'>'`) have multiple tokens and are never treated as operators.
-///
-/// "Last redirect wins" semantics per fd. A trailing operator with no following
-/// filename is kept as a literal argument.
+/// "Last redirect wins" semantics per fd. A trailing operator with no
+/// following filename is kept as a literal argument.
 fn extract_redirects(
-    args: Vec<Arg>,
+    args: Vec<Word>,
 ) -> (
-    Vec<Arg>,
+    Vec<Word>,
     Option<StdoutRedirection>,
     Option<StderrRedirection>,
 ) {
-    let mut out: Vec<Arg> = Vec::new();
+    let mut out: Vec<Word> = Vec::new();
     let mut stdout_redirect: Option<StdoutRedirection> = None;
     let mut stderr_redirect: Option<StderrRedirection> = None;
 
     let mut iter = args.into_iter().peekable();
-    while let Some(arg) = iter.next() {
-        if let Some((is_stdout, mode)) = classify_redirect(&arg) {
+    while let Some(word) = iter.next() {
+        if let Some((is_stdout, mode)) = classify_redirect(&word) {
             if let Some(target) = iter.next() {
                 let path = std::path::PathBuf::from(target.to_string());
                 if is_stdout {
@@ -243,23 +167,26 @@ fn extract_redirects(
                     stderr_redirect = Some(StderrRedirection::new(mode, path));
                 }
             } else {
-                // No filename follows — keep the operator as a literal argument.
-                out.push(arg);
+                out.push(word);
             }
         } else {
-            out.push(arg);
+            out.push(word);
         }
     }
 
     (out, stdout_redirect, stderr_redirect)
 }
 
-/// Return the redirect class for `arg` if it is a redirect operator, else `None`.
-fn classify_redirect(arg: &Arg) -> Option<(bool, RedirectMode)> {
-    if arg.tokens.len() != 1 || !matches!(arg.tokens[0].kind, TokenKind::Word(_)) {
+/// Return the redirect class for `word` if it is a redirect operator.
+///
+/// Only pure unquoted, unescaped words are eligible: `span.len() ==
+/// bytes.len()` ensures quote characters and backslash escapes would
+/// expand the span beyond the content length.
+fn classify_redirect(word: &Word) -> Option<(bool, RedirectMode)> {
+    if word.span.len() != word.bytes.len() {
         return None;
     }
-    match arg.bytes.as_ref() {
+    match word.bytes.as_ref() {
         b">>" | b"1>>" => Some((true, RedirectMode::Append)),
         b">" | b"1>" => Some((true, RedirectMode::Overwrite)),
         b"2>>" => Some((false, RedirectMode::Append)),
@@ -271,12 +198,14 @@ fn classify_redirect(arg: &Arg) -> Option<(bool, RedirectMode)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::QuoteKind;
+    use crate::scanner::Scanner;
+    use crate::tokenizer::QuoteKind;
     use proptest::prelude::*;
 
     fn parse_raw(raw: &[u8]) -> Result<Vec<UnresolvedStage>, ShellError> {
-        let input = Input::new(raw);
-        parse(&input).collect()
+        let mut sc = Scanner::new();
+        sc.push(raw);
+        Parser::new(sc.finalize()).collect()
     }
 
     fn parse_single(raw: &[u8]) -> UnresolvedStage {
@@ -476,49 +405,28 @@ mod tests {
         assert_eq!(args, vec![b"hello".to_vec()]);
     }
 
-    // --- Token-structure tests ---
+    // --- Redirect classification ---
 
     #[test]
-    fn test_unquoted_arg_has_single_word_token() {
-        let stage = parse_single(b"echo hello");
-        let arg = &stage.args[0];
-        assert_eq!(arg.tokens.len(), 1);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::Word(_)));
+    fn test_backslash_escaped_gt_not_a_redirect() {
+        let stage = parse_single(b"echo \\>");
+        assert!(stage.stdout_redirect.is_none());
+        assert_eq!(stage.args[0].as_bytes(), b">");
     }
 
     #[test]
-    fn test_single_quoted_arg_has_single_quoted_token() {
-        let stage = parse_single(b"echo 'hello world'");
-        let arg = &stage.args[0];
-        assert_eq!(arg.tokens.len(), 1);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::SingleQuoted(_)));
-    }
-
-    #[test]
-    fn test_double_quoted_arg_has_double_quoted_token() {
-        let stage = parse_single(b"echo \"hello world\"");
-        let arg = &stage.args[0];
-        assert_eq!(arg.tokens.len(), 1);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::DoubleQuoted(_)));
-    }
-
-    #[test]
-    fn test_mixed_arg_has_multiple_tokens() {
-        let stage = parse_single(b"echo pre\"mid\"post");
-        let arg = &stage.args[0];
-        assert_eq!(arg.tokens.len(), 3);
-        assert!(matches!(arg.tokens[0].kind, TokenKind::Word(_)));
-        assert!(matches!(arg.tokens[1].kind, TokenKind::DoubleQuoted(_)));
-        assert!(matches!(arg.tokens[2].kind, TokenKind::Word(_)));
+    fn test_backslash_escaped_append_redirect_not_a_redirect() {
+        let stage = parse_single(b"echo 1\\>>");
+        assert!(stage.stdout_redirect.is_none());
+        assert_eq!(stage.args[0].as_bytes(), b"1>>");
     }
 
     #[test]
     fn test_mixed_quoted_operator_not_a_redirect() {
-        // 1'>' has two tokens (Word + SingleQuoted) so it is never a redirect.
+        // 1'>' — the span covers 4 raw bytes, content is 2 bytes → not a redirect.
         let stage = parse_single(b"echo 1'>'");
         assert!(stage.stdout_redirect.is_none());
         assert_eq!(stage.args[0].as_bytes(), b"1>");
-        assert_eq!(stage.args[0].tokens.len(), 2);
     }
 
     // --- Unclosed quote error tests ---
@@ -581,7 +489,6 @@ mod tests {
 
     #[test]
     fn test_pipeline_unclosed_quote_span_accounts_for_leading_whitespace() {
-        // `"` is at byte 16 in the full input `echo foo | echo "bar`
         let raw = b"echo foo | echo \"bar";
         let err = parse_raw(raw).unwrap_err();
         if let ShellError::UnclosedQuote { span, .. } = err {
@@ -931,26 +838,6 @@ mod tests {
                 prop_assert!(stage.stdout_redirect.is_none());
                 prop_assert!(stage.stderr_redirect.is_none());
             }
-        }
-    }
-
-    proptest! {
-        #[test]
-        fn unclosed_quote_iff_needs_continuation(
-            // Exclude '|' (0x7c): a leading/empty-segment pipe fires EmptyPipelineSegment
-            // before UnclosedQuote, breaking the iff relationship.
-            input in proptest::collection::vec(
-                prop_oneof![0x20u8..=0x7bu8, 0x7du8..=0x7eu8], 0..64
-            )
-        ) {
-            use crate::{error::ShellError, lexer};
-            let is_unclosed = matches!(parse_raw(&input), Err(ShellError::UnclosedQuote { .. }));
-            let needs_cont = lexer::needs_continuation(&input);
-            prop_assert_eq!(
-                is_unclosed, needs_cont,
-                "UnclosedQuote and needs_continuation disagree for: {:?}",
-                String::from_utf8_lossy(&input)
-            );
         }
     }
 }
